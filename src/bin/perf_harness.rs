@@ -4,9 +4,9 @@ use std::process;
 use std::time::Instant;
 
 use hpc_algorithms::{
-    argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar, argmin_simd_filtered,
-    argmin_std, argmin_vector_indices, gcd_binary, gcd_scalar, prefix_sum_scalar,
-    prefix_sum_scalar_in_place, BLOCK_SIZE,
+    BLOCK_SIZE, argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar,
+    argmin_simd_filtered, argmin_std, argmin_vector_indices, gcd_binary, gcd_scalar,
+    prefix_sum_scalar, prefix_sum_scalar_in_place,
 };
 
 #[cfg(target_arch = "aarch64")]
