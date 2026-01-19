@@ -3,7 +3,11 @@ use std::hint::black_box;
 use std::process;
 use std::time::Instant;
 
-use hpc_algorithms::{gcd_binary, gcd_scalar, prefix_sum_scalar, prefix_sum_scalar_in_place};
+use hpc_algorithms::{
+    argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar, argmin_simd_filtered,
+    argmin_std, argmin_vector_indices, gcd_binary, gcd_scalar, prefix_sum_scalar,
+    prefix_sum_scalar_in_place, BLOCK_SIZE,
+};
 
 #[cfg(target_arch = "aarch64")]
 use hpc_algorithms::{prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
@@ -12,6 +16,13 @@ const DEFAULT_SEED: u64 = 0x1234_5678_9ABC_DEF0;
 
 #[derive(Clone, Copy)]
 enum Bench {
+    ArgminStd,
+    ArgminScalar,
+    ArgminBranchless,
+    ArgminMinThenFind,
+    ArgminBlocked,
+    ArgminSimdIndices,
+    ArgminSimdFiltered,
     GcdScalar,
     GcdBinary,
     PrefixSumScalar,
@@ -143,6 +154,13 @@ Options:
 }
 
 fn list_benches() {
+    println!("argmin_std");
+    println!("argmin_scalar");
+    println!("argmin_branchless");
+    println!("argmin_min_then_find");
+    println!("argmin_blocked");
+    println!("argmin_simd_indices");
+    println!("argmin_simd_filtered");
     println!("gcd_scalar");
     println!("gcd_binary");
     println!("prefix_sum_scalar");
@@ -157,6 +175,13 @@ fn list_benches() {
 
 fn parse_bench(name: &str) -> Option<Bench> {
     match name {
+        "argmin_std" => Some(Bench::ArgminStd),
+        "argmin_scalar" => Some(Bench::ArgminScalar),
+        "argmin_branchless" => Some(Bench::ArgminBranchless),
+        "argmin_min_then_find" => Some(Bench::ArgminMinThenFind),
+        "argmin_blocked" => Some(Bench::ArgminBlocked),
+        "argmin_simd_indices" => Some(Bench::ArgminSimdIndices),
+        "argmin_simd_filtered" => Some(Bench::ArgminSimdFiltered),
         "gcd_scalar" => Some(Bench::GcdScalar),
         "gcd_binary" => Some(Bench::GcdBinary),
         "prefix_sum_scalar" => Some(Bench::PrefixSumScalar),
@@ -174,6 +199,13 @@ fn parse_bench(name: &str) -> Option<Bench> {
 impl Bench {
     fn default_len(self) -> usize {
         match self {
+            Bench::ArgminStd
+            | Bench::ArgminScalar
+            | Bench::ArgminBranchless
+            | Bench::ArgminMinThenFind
+            | Bench::ArgminBlocked
+            | Bench::ArgminSimdIndices
+            | Bench::ArgminSimdFiltered => 1_000_000,
             Bench::GcdScalar | Bench::GcdBinary => 100_000,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 1_000_000,
             #[cfg(target_arch = "aarch64")]
@@ -185,6 +217,13 @@ impl Bench {
 
     fn default_iters(self) -> usize {
         match self {
+            Bench::ArgminStd
+            | Bench::ArgminScalar
+            | Bench::ArgminBranchless
+            | Bench::ArgminMinThenFind
+            | Bench::ArgminBlocked
+            | Bench::ArgminSimdIndices
+            | Bench::ArgminSimdFiltered => 10,
             Bench::GcdScalar | Bench::GcdBinary => 100,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 10,
             #[cfg(target_arch = "aarch64")]
@@ -196,6 +235,13 @@ impl Bench {
 
     fn name(self) -> &'static str {
         match self {
+            Bench::ArgminStd => "argmin_std",
+            Bench::ArgminScalar => "argmin_scalar",
+            Bench::ArgminBranchless => "argmin_branchless",
+            Bench::ArgminMinThenFind => "argmin_min_then_find",
+            Bench::ArgminBlocked => "argmin_blocked",
+            Bench::ArgminSimdIndices => "argmin_simd_indices",
+            Bench::ArgminSimdFiltered => "argmin_simd_filtered",
             Bench::GcdScalar => "gcd_scalar",
             Bench::GcdBinary => "gcd_binary",
             Bench::PrefixSumScalar => "prefix_sum_scalar",
@@ -256,6 +302,13 @@ fn run_bench(config: Config) {
     let stats = bench_stats(config.bench, &config);
     let start = Instant::now();
     match config.bench {
+        Bench::ArgminStd => bench_argmin(config, argmin_std),
+        Bench::ArgminScalar => bench_argmin(config, argmin_scalar),
+        Bench::ArgminBranchless => bench_argmin(config, argmin_branchless),
+        Bench::ArgminMinThenFind => bench_argmin(config, argmin_min_then_find),
+        Bench::ArgminBlocked => bench_argmin(config, argmin_blocked),
+        Bench::ArgminSimdIndices => bench_argmin(config, argmin_vector_indices),
+        Bench::ArgminSimdFiltered => bench_argmin(config, argmin_simd_filtered),
         Bench::GcdScalar => bench_gcd_scalar(config),
         Bench::GcdBinary => bench_gcd_binary(config),
         Bench::PrefixSumScalar => bench_prefix_sum_scalar(config),
@@ -282,6 +335,25 @@ struct BenchStats {
 fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
     let work_items = (config.len as u128) * (config.iters as u128);
     match bench {
+        Bench::ArgminStd
+        | Bench::ArgminScalar
+        | Bench::ArgminBranchless
+        | Bench::ArgminSimdIndices
+        | Bench::ArgminSimdFiltered => BenchStats {
+            work_items,
+            bytes: work_items * 4,
+            unit: "elem",
+        },
+        Bench::ArgminMinThenFind => BenchStats {
+            work_items,
+            bytes: work_items * 8,
+            unit: "elem",
+        },
+        Bench::ArgminBlocked => BenchStats {
+            work_items,
+            bytes: work_items * 4 + (BLOCK_SIZE as u128) * (config.iters as u128) * 4,
+            unit: "elem",
+        },
         Bench::GcdScalar | Bench::GcdBinary => BenchStats {
             work_items,
             bytes: work_items * 16,
@@ -340,6 +412,34 @@ fn format_rate(rate: f64, unit: &str) -> String {
 
 fn verify_bench(bench: Bench) {
     match bench {
+        Bench::ArgminStd => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_std(&values), Some(1));
+        }
+        Bench::ArgminScalar => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_scalar(&values), Some(1));
+        }
+        Bench::ArgminBranchless => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_branchless(&values), Some(1));
+        }
+        Bench::ArgminMinThenFind => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_min_then_find(&values), Some(1));
+        }
+        Bench::ArgminBlocked => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_blocked(&values), Some(1));
+        }
+        Bench::ArgminSimdIndices => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_vector_indices(&values), Some(1));
+        }
+        Bench::ArgminSimdFiltered => {
+            let values = [3, 1, 2, 1];
+            assert_eq!(argmin_simd_filtered(&values), Some(1));
+        }
         Bench::GcdScalar => {
             let g = gcd_scalar(21, 14);
             assert_eq!(g, 7);
@@ -382,6 +482,17 @@ fn verify_bench(bench: Bench) {
             assert_eq!(input, expected);
         }
     }
+}
+
+fn bench_argmin(config: Config, func: fn(&[i32]) -> Option<usize>) {
+    let input = make_i32_input(config.len, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        if let Some(idx) = func(black_box(&input)) {
+            acc ^= idx;
+        }
+    }
+    black_box(acc);
 }
 
 fn bench_gcd_scalar(config: Config) {

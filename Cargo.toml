@@ -16,3 +16,7 @@ harness = false
 [[bench]]
 name = "gcd"
 harness = false
+
+[[bench]]
+name = "argmin"
+harness = false

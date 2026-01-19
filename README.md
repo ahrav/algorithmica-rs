@@ -4,6 +4,7 @@ Rust implementations of algorithms from [Algorithms for Modern Hardware](https:/
 
 ## Implemented
 
+- **Argmin**: Scalar, SIMD-backed (AVX2/NEON), min+find, and blocked variants
 - **GCD**: Euclidean vs Binary (Stein's algorithm)
 - **Prefix Sum**: Scalar vs NEON SIMD (aarch64)
 
@@ -15,6 +16,7 @@ cargo bench
 
 # Run specific algorithm
 cargo bench -- gcd
+cargo bench -- argmin
 cargo bench -- prefix_sum
 ```
 
@@ -22,7 +24,7 @@ cargo bench -- prefix_sum
 
 ```bash
 # Hardware counter profiling
-./scripts/perf_stat.sh gcd
+./scripts/perf_stat.sh --bench argmin_simd_filtered --len 1000000 --iters 10
 ```
 
 ## License
