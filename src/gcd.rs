@@ -1,20 +1,25 @@
 pub fn gcd_scalar(a: i64, b: i64) -> i64 {
-    if b == 0 { a } else { gcd_scalar(b, a % b) }
+    gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64
+}
+
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
 }
 
 pub fn gcd_binary(a: i64, b: i64) -> i64 {
+    let mut a = a.unsigned_abs();
+    let mut b = b.unsigned_abs();
     if a == 0 {
-        return b;
+        return b as i64;
     }
     if b == 0 {
-        return a;
+        return a as i64;
     }
-    if a < 0 || b < 0 {
-        return gcd_scalar(a, b);
-    }
-
-    let mut a = a as u64;
-    let mut b = b as u64;
 
     let mut az = a.trailing_zeros();
     let bz = b.trailing_zeros();
@@ -66,8 +71,9 @@ mod tests {
         /// gcd(a, 0) == abs(a) and gcd(0, b) == abs(b)
         #[test]
         fn identity_with_zero(a in any::<i64>()) {
-            prop_assert_eq!(gcd_scalar(a, 0), a);
-            prop_assert_eq!(gcd_scalar(0, a), a);
+            let expected = a.unsigned_abs() as i64;
+            prop_assert_eq!(gcd_scalar(a, 0), expected);
+            prop_assert_eq!(gcd_scalar(0, a), expected);
         }
 
         /// gcd(a, a) == abs(a) for non-negative a
