@@ -11,7 +11,7 @@ use hpc_algorithms::{prefix_sum_blocked, prefix_sum_interleaved};
 const INPUT_SIZES: &[(&str, usize)] = &[
     ("l1_8k", 8 * 1024),
     ("l2_64k", 64 * 1024),
-    ("l3_1m", 1 * 1024 * 1024),
+    ("l3_1m", 1024 * 1024),
     ("mem_16m", 16 * 1024 * 1024),
 ];
 
