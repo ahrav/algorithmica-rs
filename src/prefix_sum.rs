@@ -194,6 +194,21 @@ mod neon_scan {
 #[cfg(target_arch = "aarch64")]
 pub use neon_scan::{prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
 
+#[cfg(not(target_arch = "aarch64"))]
+pub fn prefix_sum(_: &mut [i32]) {
+    panic!("This implementation requires aarch64");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn prefix_sum_blocked(_: &mut [i32]) {
+    panic!("This implementation requires aarch64");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn prefix_sum_interleaved(_: &mut [i32]) {
+    panic!("This implementation requires aarch64");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,19 +326,4 @@ mod tests {
         super::prefix_sum_interleaved(&mut input);
         assert_eq!(input, expected);
     }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub fn prefix_sum(_: &mut [i32]) {
-    panic!("This implementation requires aarch64");
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub fn prefix_sum_blocked(_: &mut [i32]) {
-    panic!("This implementation requires aarch64");
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub fn prefix_sum_interleaved(_: &mut [i32]) {
-    panic!("This implementation requires aarch64");
 }
