@@ -1,3 +1,30 @@
+//! Greatest Common Divisor (GCD) algorithms.
+//!
+//! This module provides two GCD implementations that illustrate the performance difference
+//! between division-based and division-free algorithms on modern CPUs.
+//!
+//! # Algorithms
+//!
+//! - **Euclidean** ([`gcd_scalar`]): Uses repeated modulo operations. Simple but division
+//!   is slow on most CPUs (10-90 cycles depending on operand sizes).
+//!
+//! - **Binary/Stein's** ([`gcd_binary`]): Replaces division with bit shifts and subtraction.
+//!   While it performs more operations, each operation is much cheaper (1-3 cycles).
+//!
+//! # Performance
+//!
+//! On modern x86 and ARM CPUs, the binary algorithm is typically 2-4x faster than Euclidean
+//! because `trailing_zeros()` compiles to a single `CTZ`/`TZCNT` instruction and subtraction
+//! is vastly cheaper than division.
+//!
+//! # References
+//!
+//! - [GCD chapter](https://en.algorithmica.org/hpc/algorithms/gcd/)
+
+/// Computes the GCD using the Euclidean algorithm.
+///
+/// Uses repeated modulo: `gcd(a, b) = gcd(b, a % b)` until `b = 0`.
+/// Simple and correct, but division is expensive (~10-90 cycles per operation).
 pub fn gcd_scalar(a: i64, b: i64) -> i64 {
     gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64
 }
@@ -11,6 +38,16 @@ fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
+/// Computes the GCD using Stein's binary algorithm (division-free).
+///
+/// This algorithm exploits three identities to avoid expensive division:
+///
+/// 1. **gcd(2a, 2b) = 2 · gcd(a, b)** — factor out common powers of 2
+/// 2. **gcd(2a, b) = gcd(a, b)** when b is odd — remove factors of 2 from one operand
+/// 3. **gcd(a, b) = gcd(|a - b|, min(a, b))** — subtraction preserves GCD
+///
+/// The key insight is that `trailing_zeros()` compiles to a single CPU instruction
+/// (`CTZ` on ARM, `TZCNT` on x86), making the "remove factors of 2" step extremely fast.
 pub fn gcd_binary(a: i64, b: i64) -> i64 {
     let mut a = a.unsigned_abs();
     let mut b = b.unsigned_abs();
@@ -21,18 +58,24 @@ pub fn gcd_binary(a: i64, b: i64) -> i64 {
         return a as i64;
     }
 
+    // Factor out common powers of 2: gcd(2^k · a', 2^k · b') = 2^k · gcd(a', b')
+    // We'll multiply the result by 2^shift at the end.
     let mut az = a.trailing_zeros();
     let bz = b.trailing_zeros();
     let shift = az.min(bz);
-    b >>= bz;
+    b >>= bz; // b is now odd (all trailing zeros removed)
 
     while a != 0 {
+        // Remove factors of 2 from a (doesn't affect GCD since b is odd)
         a >>= az;
         if a == b {
             return (b << shift) as i64;
         }
+        // Apply identity: gcd(a, b) = gcd(|a - b|, min(a, b))
+        // The difference of two odd numbers is always even, so next iteration
+        // will have trailing zeros to remove—this is what makes the algorithm converge.
         let (min_ab, diff) = if a < b { (a, b - a) } else { (b, a - b) };
-        az = diff.trailing_zeros();
+        az = diff.trailing_zeros(); // single CTZ instruction
         b = min_ab;
         a = diff;
     }

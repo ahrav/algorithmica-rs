@@ -1,3 +1,30 @@
+//! Inclusive prefix sum (scan) algorithms.
+//!
+//! Computes running totals: `[a, b, c, d]` → `[a, a+b, a+b+c, a+b+c+d]`
+//!
+//! # The Parallelization Challenge
+//!
+//! Prefix sum has an inherent data dependency: each output depends on all previous
+//! inputs. This seems to prevent parallelization, but SIMD can still help through
+//! a clever two-phase approach:
+//!
+//! 1. **Local prefix**: Compute prefix sums within each SIMD lane independently
+//! 2. **Accumulate**: Propagate the final value of each chunk to subsequent chunks
+//!
+//! # Strategies
+//!
+//! | Function | Description |
+//! |----------|-------------|
+//! | [`prefix_sum_scalar`] | Simple sequential scan |
+//! | [`prefix_sum`] | Best available (NEON on aarch64) |
+//! | [`prefix_sum_blocked`] | Block-wise for cache efficiency |
+//! | [`prefix_sum_interleaved`] | Overlaps compute with memory access |
+//!
+//! # References
+//!
+//! - [Prefix sum chapter](https://en.algorithmica.org/hpc/algorithms/prefix/)
+
+/// Sequential prefix sum returning a new vector.
 pub fn prefix_sum_scalar(input: &[i32]) -> Vec<i32> {
     let mut output = Vec::with_capacity(input.len());
     let mut sum = 0i32;
@@ -8,6 +35,7 @@ pub fn prefix_sum_scalar(input: &[i32]) -> Vec<i32> {
     output
 }
 
+/// Sequential prefix sum in-place.
 pub fn prefix_sum_scalar_in_place(values: &mut [i32]) {
     let mut sum = 0i32;
     for value in values {
@@ -16,34 +44,44 @@ pub fn prefix_sum_scalar_in_place(values: &mut [i32]) {
     }
 }
 
+/// ARM NEON SIMD implementations for aarch64.
 #[cfg(target_arch = "aarch64")]
 mod neon_scan {
     use std::arch::aarch64::*;
     use std::arch::asm;
 
-    const BLOCK_ELEMS: usize = 4096; // elements, not bytes
+    /// Elements per block—tuned for L1 cache (4096 × 4 bytes = 16KB, fits in 32KB L1).
+    const BLOCK_ELEMS: usize = 4096;
+    /// Elements to process before accumulating—balances ILP vs memory latency.
     const INTERLEAVE_ELEMS: usize = 64;
+    /// Prefetch distance in elements—hides ~100 cycle memory latency.
     const PREFETCH_ELEMS: usize = 64;
+    /// NEON vector width for i32.
     const LANES: usize = 4;
 
+    /// Default prefix sum using the interleaved strategy.
     pub fn prefix_sum(a: &mut [i32]) {
         unsafe { prefix_neon_interleaved(a) }
     }
 
+    /// Block-wise prefix sum for cache efficiency.
     pub fn prefix_sum_blocked(a: &mut [i32]) {
         unsafe { prefix_neon_blocked(a) }
     }
 
+    /// Interleaved prefix sum that overlaps compute with memory access.
     pub fn prefix_sum_interleaved(a: &mut [i32]) {
         unsafe { prefix_neon_interleaved(a) }
     }
 
+    /// Simple blocked implementation for cache efficiency.
     #[target_feature(enable = "neon")]
     unsafe fn prefix_neon_blocked(a: &mut [i32]) {
         unsafe {
             let n = a.len();
             let mut s = vdupq_n_s32(0);
 
+            // Process in L1-sized blocks to minimize cache misses
             for base in (0..n).step_by(BLOCK_ELEMS) {
                 let len = (n - base).min(BLOCK_ELEMS);
                 s = local_prefix(a.as_mut_ptr().add(base), len, s);
@@ -51,12 +89,18 @@ mod neon_scan {
         }
     }
 
+    /// Interleaved implementation that overlaps Phase 1 and Phase 2.
+    ///
+    /// The key optimization: while we're doing `prefix_lane` on chunk N,
+    /// we simultaneously do `accumulate` on chunk N-INTERLEAVE. This
+    /// overlaps compute with memory access, hiding latency.
     #[target_feature(enable = "neon")]
     unsafe fn prefix_neon_interleaved(a: &mut [i32]) {
         unsafe {
             let n = a.len();
             let vec_len = n & !(LANES - 1);
 
+            // Fallback to scalar for tiny arrays
             if vec_len == 0 {
                 let mut carry = 0i32;
                 let p = a.as_mut_ptr();
@@ -75,12 +119,15 @@ mod neon_scan {
             if vec_len <= INTERLEAVE_ELEMS {
                 s = local_prefix(p, vec_len, s);
             } else {
+                // Prime the pipeline: do prefix_lane on first INTERLEAVE_ELEMS
                 let mut i = 0;
                 while i < INTERLEAVE_ELEMS {
                     prefix_lane(p.add(i));
                     i += LANES;
                 }
 
+                // Steady state: prefix_lane on current chunk while
+                // accumulating the chunk INTERLEAVE_ELEMS behind
                 let end = p.add(vec_len);
                 let mut j = INTERLEAVE_ELEMS;
                 while j < vec_len {
@@ -89,6 +136,7 @@ mod neon_scan {
                     j += LANES;
                 }
 
+                // Drain: finish accumulating the last INTERLEAVE_ELEMS
                 let mut k = vec_len - INTERLEAVE_ELEMS;
                 while k < vec_len {
                     s = accumulate_prefetch(p.add(k), s, end);
@@ -96,6 +144,7 @@ mod neon_scan {
                 }
             }
 
+            // Scalar tail for remaining elements
             let mut carry = vgetq_lane_s32(s, 0);
             let mut idx = vec_len;
             while idx < n {
@@ -106,6 +155,10 @@ mod neon_scan {
         }
     }
 
+    /// Issues a prefetch hint to bring data into L1 cache.
+    ///
+    /// `prfm pldl1keep` = "prefetch for load, L1, keep in cache"
+    /// This instruction is a hint—it doesn't stall if the address is invalid.
     #[inline]
     unsafe fn prefetch_read(p: *const i32) {
         unsafe {
@@ -113,22 +166,29 @@ mod neon_scan {
         }
     }
 
+    /// Two-phase prefix sum within a block.
+    ///
+    /// Phase 1: `prefix_lane` computes local prefix sums within each 4-element chunk
+    /// Phase 2: `accumulate` propagates the running total across chunks
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn local_prefix(p: *mut i32, len: usize, mut s: int32x4_t) -> int32x4_t {
         unsafe {
+            // Phase 1: local prefix within each vector
             let mut i = 0;
             while i + 4 <= len {
                 prefix_lane(p.add(i));
                 i += 4;
             }
 
+            // Phase 2: propagate carry across vectors
             let mut j = 0;
             while j + 4 <= len {
                 s = accumulate(p.add(j), s);
                 j += 4;
             }
 
+            // Scalar tail
             let mut carry = vgetq_lane_s32(s, 0);
             while j < len {
                 carry = carry.wrapping_add(*p.add(j));
@@ -140,6 +200,18 @@ mod neon_scan {
         }
     }
 
+    /// Computes prefix sum within a single 4-element NEON vector.
+    ///
+    /// Uses shift-and-add pattern to compute prefix in O(log lanes) steps:
+    ///
+    /// ```text
+    /// Input:  [a,    b,    c,    d   ]
+    /// Step 1: [a,  a+b,  b+c,  c+d  ]  (shift by 1, add)
+    /// Step 2: [a,  a+b, a+b+c, a+b+c+d] (shift by 2, add)
+    /// ```
+    ///
+    /// `vextq_s32(zero, x, 3)` shifts x right by 1 lane (inserting zero on left).
+    /// For 4 lanes, we need log2(4) = 2 steps.
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn prefix_lane(p: *mut i32) {
@@ -147,9 +219,11 @@ mod neon_scan {
             let zero = vdupq_n_s32(0);
             let mut x = vld1q_s32(p);
 
+            // Shift right by 1 lane: [0, a, b, c], then add to get [a, a+b, b+c, c+d]
             let t1 = vextq_s32(zero, x, 3);
             x = vaddq_s32(x, t1);
 
+            // Shift right by 2 lanes: [0, 0, a, a+b], then add to complete prefix
             let t2 = vextq_s32(zero, x, 2);
             x = vaddq_s32(x, t2);
 
@@ -157,20 +231,29 @@ mod neon_scan {
         }
     }
 
+    /// Adds running sum to a vector and updates the carry.
+    ///
+    /// After `prefix_lane`, each vector contains its local prefix sum.
+    /// This function adds the running total `s` (broadcast to all lanes)
+    /// and extracts lane 3 (the local total) to update the carry.
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn accumulate(p: *mut i32, s: int32x4_t) -> int32x4_t {
         unsafe {
             let mut x = vld1q_s32(p);
+            // Lane 3 contains sum of all 4 elements (from prefix_lane)
             let local_total = vgetq_lane_s32(x, 3);
 
+            // Add running total to all lanes
             x = vaddq_s32(s, x);
             vst1q_s32(p, x);
 
+            // Update carry: s += local_total (broadcast to all lanes, but we only use lane 0)
             vaddq_s32(s, vdupq_n_s32(local_total))
         }
     }
 
+    /// Same as `accumulate` but also prefetches upcoming data.
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn accumulate_prefetch(p: *mut i32, s: int32x4_t, end: *const i32) -> int32x4_t {
