@@ -11,7 +11,7 @@ use hpc_algorithms::{
 };
 
 #[cfg(target_arch = "aarch64")]
-use hpc_algorithms::{prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
+use hpc_algorithms::{matmul_neon_blocked, prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
 
 const DEFAULT_SEED: u64 = 0x1234_5678_9ABC_DEF0;
 
@@ -29,6 +29,8 @@ enum Bench {
     MatmulIkj,
     MatmulRegister2x2,
     MatmulBlocked,
+    #[cfg(target_arch = "aarch64")]
+    MatmulNeonBlocked,
     GcdScalar,
     GcdBinary,
     PrefixSumScalar,
@@ -174,6 +176,8 @@ fn list_benches() {
     println!("matmul_ikj");
     println!("matmul_register_2x2");
     println!("matmul_blocked");
+    #[cfg(target_arch = "aarch64")]
+    println!("matmul_neon_blocked");
     println!("gcd_scalar");
     println!("gcd_binary");
     println!("prefix_sum_scalar");
@@ -200,6 +204,8 @@ fn parse_bench(name: &str) -> Option<Bench> {
         "matmul_ikj" => Some(Bench::MatmulIkj),
         "matmul_register_2x2" => Some(Bench::MatmulRegister2x2),
         "matmul_blocked" => Some(Bench::MatmulBlocked),
+        #[cfg(target_arch = "aarch64")]
+        "matmul_neon_blocked" => Some(Bench::MatmulNeonBlocked),
         "gcd_scalar" => Some(Bench::GcdScalar),
         "gcd_binary" => Some(Bench::GcdBinary),
         "prefix_sum_scalar" => Some(Bench::PrefixSumScalar),
@@ -229,6 +235,8 @@ impl Bench {
             | Bench::MatmulIkj
             | Bench::MatmulRegister2x2
             | Bench::MatmulBlocked => 256,
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => 256,
             Bench::GcdScalar | Bench::GcdBinary => 100_000,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 1_000_000,
             #[cfg(target_arch = "aarch64")]
@@ -252,6 +260,8 @@ impl Bench {
             | Bench::MatmulIkj
             | Bench::MatmulRegister2x2
             | Bench::MatmulBlocked => 3,
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => 3,
             Bench::GcdScalar | Bench::GcdBinary => 100,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 10,
             #[cfg(target_arch = "aarch64")]
@@ -275,6 +285,8 @@ impl Bench {
             Bench::MatmulIkj => "matmul_ikj",
             Bench::MatmulRegister2x2 => "matmul_register_2x2",
             Bench::MatmulBlocked => "matmul_blocked",
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => "matmul_neon_blocked",
             Bench::GcdScalar => "gcd_scalar",
             Bench::GcdBinary => "gcd_binary",
             Bench::PrefixSumScalar => "prefix_sum_scalar",
@@ -357,6 +369,8 @@ fn run_bench(config: Config) {
         Bench::MatmulIkj => bench_matmul(config, matmul_ikj),
         Bench::MatmulRegister2x2 => bench_matmul(config, matmul_register_blocked_2x2),
         Bench::MatmulBlocked => bench_matmul(config, matmul_blocked),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => bench_matmul(config, matmul_neon_blocked),
         Bench::GcdScalar => bench_gcd_scalar(config),
         Bench::GcdBinary => bench_gcd_binary(config),
         Bench::PrefixSumScalar => bench_prefix_sum_scalar(config),
@@ -417,6 +431,18 @@ fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
                 unit: "mul",
             }
         }
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => {
+            let n = config.len as u128;
+            let iters = config.iters as u128;
+            let ops = n * n * n * iters;
+            let bytes = n * n * 12u128 * iters;
+            BenchStats {
+                work_items: ops,
+                bytes,
+                unit: "mul",
+            }
+        }
         Bench::GcdScalar | Bench::GcdBinary => BenchStats {
             work_items,
             bytes: work_items * 16,
@@ -443,19 +469,45 @@ fn print_report(bench: Bench, config: &Config, stats: BenchStats, elapsed: std::
     let items_per_s = stats.work_items as f64 / elapsed_s;
     let bytes_per_s = stats.bytes as f64 / elapsed_s;
     let ns_per_item = (elapsed_s * 1.0e9) / stats.work_items as f64;
-    println!(
-        "bench={} len={} iters={} elapsed_s={:.6} work_items={} unit={} ns_per_item={:.3} throughput={} bytes={} byte_throughput={}",
+    let gflops = match bench {
+        Bench::MatmulBaseline
+        | Bench::MatmulTransposed
+        | Bench::MatmulIkj
+        | Bench::MatmulRegister2x2
+        | Bench::MatmulBlocked => Some(format_rate(items_per_s * 2.0, "FLOP")),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => Some(format_rate(items_per_s * 2.0, "FLOP")),
+        _ => None,
+    };
+
+    let mut lines = Vec::with_capacity(5);
+    lines.push(format!(
+        "bench={} len={} iters={}",
         bench.name(),
         config.len,
-        config.iters,
+        config.iters
+    ));
+    lines.push(format!(
+        "elapsed_s={:.6} ns_per_item={:.3} throughput={}",
         elapsed_s,
-        stats.work_items,
-        stats.unit,
         ns_per_item,
-        format_rate(items_per_s, stats.unit),
+        format_rate(items_per_s, stats.unit)
+    ));
+    lines.push(format!(
+        "work_items={} unit={}",
+        stats.work_items, stats.unit
+    ));
+    lines.push(format!(
+        "bytes={} byte_throughput={}",
         stats.bytes,
-        format_rate(bytes_per_s, "B"),
-    );
+        format_rate(bytes_per_s, "B")
+    ));
+
+    if let Some(gflops) = gflops {
+        lines.push(format!("gflops={}", gflops));
+    }
+
+    println!("{}", lines.join("\n"));
 }
 
 fn format_rate(rate: f64, unit: &str) -> String {
@@ -530,6 +582,8 @@ fn verify_bench(bench: Bench) {
         Bench::MatmulIkj => verify_matmul_variant(matmul_ikj),
         Bench::MatmulRegister2x2 => verify_matmul_variant(matmul_register_blocked_2x2),
         Bench::MatmulBlocked => verify_matmul_variant(matmul_blocked),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => verify_matmul_variant(matmul_neon_blocked),
         Bench::GcdScalar => {
             let g = gcd_scalar(21, 14);
             assert_eq!(g, 7);

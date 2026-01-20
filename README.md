@@ -6,7 +6,7 @@ Rust implementations of algorithms from [Algorithms for Modern Hardware](https:/
 
 - **Argmin**: Scalar, SIMD-backed (AVX2/NEON), min+find, and blocked variants
 - **GCD**: Euclidean vs Binary (Stein's algorithm)
-- **Matrix Multiplication**: Baseline, transposed, loop-reordered, register-blocked, cache-blocked variants
+- **Matrix Multiplication**: Baseline, transposed, loop-reordered, register-blocked, cache-blocked, NEON-blocked (aarch64)
 - **Prefix Sum**: Scalar vs NEON SIMD (aarch64)
 
 ## Benchmarks

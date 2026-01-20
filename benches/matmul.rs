@@ -1,4 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+#[cfg(target_arch = "aarch64")]
+use hpc_algorithms::matmul_neon_blocked;
 use hpc_algorithms::{
     matmul_baseline, matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed,
 };
@@ -53,6 +55,8 @@ fn bench_matmul(c: &mut Criterion) {
     bench_variant(c, "matmul_ikj", matmul_ikj);
     bench_variant(c, "matmul_register_2x2", matmul_register_blocked_2x2);
     bench_variant(c, "matmul_blocked", matmul_blocked);
+    #[cfg(target_arch = "aarch64")]
+    bench_variant(c, "matmul_neon_blocked", matmul_neon_blocked);
 }
 
 criterion_group!(benches, bench_matmul);
