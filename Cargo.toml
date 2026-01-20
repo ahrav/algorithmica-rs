@@ -20,3 +20,7 @@ harness = false
 [[bench]]
 name = "argmin"
 harness = false
+
+[[bench]]
+name = "matmul"
+harness = false
