@@ -12,8 +12,8 @@
 //! | [`argmin_branchless`] | Conditional moves | Random data (avoids mispredictions) |
 //! | [`argmin_min_then_find`] | Two-pass: find min, then index | Large arrays |
 //! | [`argmin_blocked`] | Block-wise min then precise search | Very large arrays |
-//! | [`argmin_vector_indices`] | SIMD with parallel index tracking | Large arrays with AVX2/NEON |
-//! | [`argmin_simd_filtered`] | Speculative block filtering | Large arrays with AVX2/NEON |
+//! | [`argmin_vector_indices`] | SIMD with parallel index tracking | Large arrays with AVX2/AVX-512/NEON |
+//! | [`argmin_simd_filtered`] | Speculative block filtering | Large arrays with AVX2/AVX-512/NEON |
 //!
 //! # Why Branches Hurt
 //!
@@ -25,9 +25,12 @@
 //!
 //! - [Argmin chapter](https://en.algorithmica.org/hpc/algorithms/argmin/)
 
+#[cfg(target_arch = "x86_64")]
+use std::sync::OnceLock;
+
 /// Block size for [`argmin_blocked`]. Tuned for L1 cache residency.
 pub const BLOCK_SIZE: usize = 256;
-/// Block size for SIMD filtered search. Must be a multiple of the SIMD width (4 for NEON, 8 for AVX2).
+/// Block size for SIMD filtered search. Must be a multiple of the SIMD width (4 for NEON, 8 for AVX2, 16 for AVX-512).
 pub const SIMD_FILTER_BLOCK: usize = 32;
 
 #[cfg(target_arch = "aarch64")]
@@ -115,7 +118,34 @@ pub fn avx2_available() -> bool {
     }
 }
 
-/// Runtime availability for SIMD implementations (AVX2 on x86, NEON on aarch64).
+/// Runtime detection for AVX-512 support.
+pub fn avx512_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx512f")
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avx512_enabled() -> bool {
+    // Opt-in toggle for AVX-512 to keep AVX2 as the default path.
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ARGMIN_AVX512")
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Runtime availability for SIMD implementations (AVX2/AVX-512 on x86, NEON on aarch64).
 pub fn simd_available() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
@@ -124,7 +154,7 @@ pub fn simd_available() -> bool {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        std::arch::is_x86_feature_detected!("avx2")
+        avx2_available() || avx512_available()
     }
 
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
@@ -135,7 +165,7 @@ pub fn simd_available() -> bool {
 
 /// SIMD-accelerated minimum value search with runtime dispatch.
 ///
-/// Uses AVX2 on x86 and NEON on aarch64, falling back to scalar otherwise.
+/// Uses AVX2 (or AVX-512 when enabled) on x86 and NEON on aarch64, falling back to scalar otherwise.
 /// The SIMD version processes multiple elements per iteration with unrolling for ILP.
 pub fn min_simd(values: &[i32]) -> Option<i32> {
     if values.is_empty() {
@@ -150,7 +180,21 @@ pub fn min_simd(values: &[i32]) -> Option<i32> {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            let avx2_ok = avx2_available();
+            if avx512_available() && (avx512_enabled() || !avx2_ok) {
+                // SAFETY: guarded by AVX-512 runtime detection and non-empty slice.
+                Some(unsafe { x86_avx512::min_avx512(values) })
+            } else if avx2_ok {
+                // SAFETY: guarded by AVX2 runtime detection and non-empty slice.
+                Some(unsafe { x86_avx2::min_avx2(values) })
+            } else {
+                min_scalar(values)
+            }
+        }
+
+        #[cfg(target_arch = "x86")]
         {
             if avx2_available() {
                 // SAFETY: guarded by AVX2 runtime detection and non-empty slice.
@@ -167,7 +211,7 @@ pub fn min_simd(values: &[i32]) -> Option<i32> {
 
 /// SIMD-accelerated linear search with runtime dispatch.
 ///
-/// Uses AVX2 on x86 or NEON on aarch64, processing multiple elements per iteration.
+/// Uses AVX2 (or AVX-512 when enabled) on x86 or NEON on aarch64, processing multiple elements per iteration.
 /// Early exits on first match using vector compare masks.
 pub fn find_simd(values: &[i32], needle: i32) -> Option<usize> {
     if values.is_empty() {
@@ -182,7 +226,21 @@ pub fn find_simd(values: &[i32], needle: i32) -> Option<usize> {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            let avx2_ok = avx2_available();
+            if avx512_available() && (avx512_enabled() || !avx2_ok) {
+                // SAFETY: guarded by AVX-512 runtime detection.
+                unsafe { x86_avx512::find_avx512(values, needle) }
+            } else if avx2_ok {
+                // SAFETY: guarded by AVX2 runtime detection.
+                unsafe { x86_avx2::find_avx2(values, needle) }
+            } else {
+                find_scalar(values, needle)
+            }
+        }
+
+        #[cfg(target_arch = "x86")]
         {
             if avx2_available() {
                 // SAFETY: guarded by AVX2 runtime detection.
@@ -201,7 +259,7 @@ pub fn find_simd(values: &[i32], needle: i32) -> Option<usize> {
 ///
 /// Maintains two vectors: one for minimum values, one for their indices. On each
 /// iteration, uses `blendv` (blend based on comparison mask) to conditionally
-/// update both vectors simultaneously—8 elements processed per cycle.
+/// update both vectors simultaneously—8 (AVX2) or 16 (AVX-512) elements per cycle on x86.
 ///
 /// This avoids the scalar loop's serial dependency while tracking exact positions.
 pub fn argmin_vector_indices(values: &[i32]) -> Option<usize> {
@@ -221,7 +279,21 @@ pub fn argmin_vector_indices(values: &[i32]) -> Option<usize> {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            let avx2_ok = avx2_available();
+            if avx512_available() && (avx512_enabled() || !avx2_ok) {
+                // SAFETY: guarded by AVX-512 runtime detection and length guard.
+                Some(unsafe { x86_avx512::argmin_vector_indices(values) })
+            } else if avx2_ok {
+                // SAFETY: guarded by AVX2 runtime detection and length guard.
+                Some(unsafe { x86_avx2::argmin_vector_indices(values) })
+            } else {
+                argmin_scalar(values)
+            }
+        }
+
+        #[cfg(target_arch = "x86")]
         {
             if avx2_available() {
                 // SAFETY: guarded by AVX2 runtime detection and length guard.
@@ -258,7 +330,21 @@ pub fn argmin_simd_filtered(values: &[i32]) -> Option<usize> {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            let avx2_ok = avx2_available();
+            if avx512_available() && (avx512_enabled() || !avx2_ok) {
+                // SAFETY: guarded by AVX-512 runtime detection.
+                Some(unsafe { x86_avx512::argmin_simd_filtered(values) })
+            } else if avx2_ok {
+                // SAFETY: guarded by AVX2 runtime detection.
+                Some(unsafe { x86_avx2::argmin_simd_filtered(values) })
+            } else {
+                argmin_scalar(values)
+            }
+        }
+
+        #[cfg(target_arch = "x86")]
         {
             if avx2_available() {
                 // SAFETY: guarded by AVX2 runtime detection.
@@ -849,6 +935,229 @@ mod x86_avx2 {
         }
 
         // Find exact index within the winning block
+        let block_end = (block_idx + super::SIMD_FILTER_BLOCK).min(len);
+        for j in block_idx..block_end {
+            if *ptr.add(j) == min_val {
+                return j;
+            }
+        }
+
+        block_idx
+    }
+}
+
+/// AVX-512 SIMD implementations for x86_64.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+mod x86_avx512 {
+    use std::arch::x86_64 as arch;
+
+    use arch::{
+        __m512i, _mm512_add_epi32, _mm512_cmpeq_epi32_mask, _mm512_cmpgt_epi32_mask,
+        _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_min_epi32, _mm512_set1_epi32,
+        _mm512_setr_epi32, _mm512_setzero_si512, _mm512_storeu_si512,
+    };
+
+    /// AVX-512 minimum with 4x unrolling for instruction-level parallelism.
+    #[target_feature(enable = "avx512f")]
+    pub unsafe fn min_avx512(values: &[i32]) -> i32 {
+        let len = values.len();
+        let ptr = values.as_ptr();
+        let mut i = 0usize;
+        let mut min_v = _mm512_set1_epi32(i32::MAX);
+
+        let vec_len = len & !63;
+        while i < vec_len {
+            let v0 = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
+            let v1 = _mm512_loadu_si512(ptr.add(i + 16) as *const __m512i);
+            let v2 = _mm512_loadu_si512(ptr.add(i + 32) as *const __m512i);
+            let v3 = _mm512_loadu_si512(ptr.add(i + 48) as *const __m512i);
+            min_v = _mm512_min_epi32(min_v, v0);
+            min_v = _mm512_min_epi32(min_v, v1);
+            min_v = _mm512_min_epi32(min_v, v2);
+            min_v = _mm512_min_epi32(min_v, v3);
+            i += 64;
+        }
+
+        while i + 16 <= len {
+            let v = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
+            min_v = _mm512_min_epi32(min_v, v);
+            i += 16;
+        }
+
+        let mut tmp = [0i32; 16];
+        _mm512_storeu_si512(tmp.as_mut_ptr() as *mut __m512i, min_v);
+        let mut min_val = tmp[0];
+        for &v in &tmp[1..] {
+            if v < min_val {
+                min_val = v;
+            }
+        }
+
+        while i < len {
+            let v = *ptr.add(i);
+            if v < min_val {
+                min_val = v;
+            }
+            i += 1;
+        }
+
+        min_val
+    }
+
+    /// AVX-512 linear search with early exit.
+    #[target_feature(enable = "avx512f")]
+    pub unsafe fn find_avx512(values: &[i32], needle: i32) -> Option<usize> {
+        let len = values.len();
+        let ptr = values.as_ptr();
+        let mut i = 0usize;
+        let needle_v = _mm512_set1_epi32(needle);
+
+        let vec_len = len & !63;
+        while i < vec_len {
+            let m1 =
+                _mm512_cmpeq_epi32_mask(needle_v, _mm512_loadu_si512(ptr.add(i) as *const __m512i));
+            let m2 = _mm512_cmpeq_epi32_mask(
+                needle_v,
+                _mm512_loadu_si512(ptr.add(i + 16) as *const __m512i),
+            );
+            let m3 = _mm512_cmpeq_epi32_mask(
+                needle_v,
+                _mm512_loadu_si512(ptr.add(i + 32) as *const __m512i),
+            );
+            let m4 = _mm512_cmpeq_epi32_mask(
+                needle_v,
+                _mm512_loadu_si512(ptr.add(i + 48) as *const __m512i),
+            );
+
+            let mask =
+                (m1 as u64) | ((m2 as u64) << 16) | ((m3 as u64) << 32) | ((m4 as u64) << 48);
+            if mask != 0 {
+                return Some(i + mask.trailing_zeros() as usize);
+            }
+
+            i += 64;
+        }
+
+        while i + 16 <= len {
+            let m =
+                _mm512_cmpeq_epi32_mask(needle_v, _mm512_loadu_si512(ptr.add(i) as *const __m512i));
+            if m != 0 {
+                return Some(i + m.trailing_zeros() as usize);
+            }
+            i += 16;
+        }
+
+        while i < len {
+            if *ptr.add(i) == needle {
+                return Some(i);
+            }
+            i += 1;
+        }
+
+        None
+    }
+
+    /// Parallel argmin tracking both values and indices in SIMD registers.
+    #[target_feature(enable = "avx512f")]
+    pub unsafe fn argmin_vector_indices(values: &[i32]) -> usize {
+        let len = values.len();
+        let ptr = values.as_ptr();
+        let mut i = 0usize;
+        let vec_len = len & !15;
+
+        let mut min_v = _mm512_set1_epi32(i32::MAX);
+        let mut idx_v = _mm512_setzero_si512();
+        let mut cur = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+        let step = _mm512_set1_epi32(16);
+
+        while i < vec_len {
+            let x = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
+            let mask = _mm512_cmpgt_epi32_mask(min_v, x);
+            min_v = _mm512_mask_blend_epi32(mask, min_v, x);
+            idx_v = _mm512_mask_blend_epi32(mask, idx_v, cur);
+            cur = _mm512_add_epi32(cur, step);
+            i += 16;
+        }
+
+        let mut min_arr = [0i32; 16];
+        let mut idx_arr = [0i32; 16];
+        _mm512_storeu_si512(min_arr.as_mut_ptr() as *mut __m512i, min_v);
+        _mm512_storeu_si512(idx_arr.as_mut_ptr() as *mut __m512i, idx_v);
+
+        let mut best_min = min_arr[0];
+        let mut best_idx = idx_arr[0] as usize;
+        for lane in 1..16 {
+            let v = min_arr[lane];
+            let idx = idx_arr[lane] as usize;
+            if v < best_min || (v == best_min && idx < best_idx) {
+                best_min = v;
+                best_idx = idx;
+            }
+        }
+
+        while i < len {
+            let v = *ptr.add(i);
+            if v < best_min {
+                best_min = v;
+                best_idx = i;
+            }
+            i += 1;
+        }
+
+        best_idx
+    }
+
+    /// Speculative block-filtering argmin using AVX-512.
+    #[target_feature(enable = "avx512f")]
+    pub unsafe fn argmin_simd_filtered(values: &[i32]) -> usize {
+        let len = values.len();
+        let ptr = values.as_ptr();
+        let mut min_val = i32::MAX;
+        let mut block_idx = 0usize;
+        let mut min_v = _mm512_set1_epi32(min_val);
+
+        let mut i = 0usize;
+        let vec_len = len & !(super::SIMD_FILTER_BLOCK - 1);
+        while i < vec_len {
+            let y1 = _mm512_loadu_si512(ptr.add(i) as *const __m512i);
+            let y2 = _mm512_loadu_si512(ptr.add(i + 16) as *const __m512i);
+            let y = _mm512_min_epi32(y1, y2);
+
+            let mask = _mm512_cmpgt_epi32_mask(min_v, y);
+            if mask != 0 {
+                block_idx = i;
+                let block_end = i + super::SIMD_FILTER_BLOCK;
+                let mut local_min = min_val;
+                for j in i..block_end {
+                    let v = *ptr.add(j);
+                    if v < local_min {
+                        local_min = v;
+                    }
+                }
+                min_val = local_min;
+                min_v = _mm512_set1_epi32(min_val);
+            }
+
+            i += super::SIMD_FILTER_BLOCK;
+        }
+
+        let mut min_idx = block_idx;
+        let mut tail_exact = false;
+        while i < len {
+            let v = *ptr.add(i);
+            if v < min_val {
+                min_val = v;
+                min_idx = i;
+                tail_exact = true;
+            }
+            i += 1;
+        }
+
+        if tail_exact {
+            return min_idx;
+        }
+
         let block_end = (block_idx + super::SIMD_FILTER_BLOCK).min(len);
         for j in block_idx..block_end {
             if *ptr.add(j) == min_val {
