@@ -382,6 +382,9 @@ fn kernel_4x4(
 pub fn matmul_blocked(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
     check_dims(a, b, c, n);
     c.fill(0.0);
+    if n == 0 {
+        return;
+    }
 
     let l3 = BLOCK_L3.min(n);
     let l2 = BLOCK_L2.min(n);
