@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "matmul"
 harness = false
+
+[[bench]]
+name = "binary_search"
+harness = false
