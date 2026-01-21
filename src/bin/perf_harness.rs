@@ -4,11 +4,11 @@ use std::process;
 use std::time::Instant;
 
 use hpc_algorithms::{
-    BLOCK_SIZE, argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar,
-    argmin_simd_filtered, argmin_std, argmin_vector_indices, binary_search_branchless,
-    binary_search_branchless_prefetch, binary_search_eytzinger, binary_search_eytzinger_prefetch,
-    binary_search_std, EytzingerLayout, gcd_binary, gcd_scalar, matmul_baseline, matmul_blocked,
-    matmul_ikj, matmul_register_blocked_2x2, matmul_transposed, prefix_sum_scalar,
+    BLOCK_SIZE, EytzingerLayout, argmin_blocked, argmin_branchless, argmin_min_then_find,
+    argmin_scalar, argmin_simd_filtered, argmin_std, argmin_vector_indices,
+    binary_search_branchless, binary_search_branchless_prefetch, binary_search_eytzinger,
+    binary_search_eytzinger_prefetch, binary_search_std, gcd_binary, gcd_scalar, matmul_baseline,
+    matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed, prefix_sum_scalar,
     prefix_sum_scalar_in_place,
 };
 

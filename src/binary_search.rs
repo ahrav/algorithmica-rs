@@ -29,6 +29,13 @@
 /// Prefetch 4 levels ahead (16 nodes) as in the reference; alignment affects cache-line grouping.
 const EYT_PREFETCH_DISTANCE: usize = 16;
 
+/// Arrays smaller than this (in bytes) skip prefetching.
+/// 32KB is a conservative L1 data cache size across modern CPUs.
+const PREFETCH_THRESHOLD_BYTES: usize = 32 * 1024;
+
+/// Minimum element count to enable prefetching (i32 = 4 bytes).
+const PREFETCH_THRESHOLD_ELEMENTS: usize = PREFETCH_THRESHOLD_BYTES / std::mem::size_of::<i32>();
+
 /// Eytzinger (level-order) layout for a sorted array.
 ///
 /// Elements are stored in BFS order of an implicit binary search tree:
@@ -120,8 +127,9 @@ pub fn binary_search_branchless(values: &[i32], needle: i32) -> Option<usize> {
 
 /// Branchless binary search with prefetching of the next midpoints.
 pub fn binary_search_branchless_prefetch(values: &[i32], needle: i32) -> Option<usize> {
-    if values.is_empty() {
-        return None;
+    // For small arrays that fit in L1/L2 cache, prefetching adds overhead without benefit
+    if values.len() < PREFETCH_THRESHOLD_ELEMENTS {
+        return binary_search_branchless(values, needle);
     }
 
     let mut base = 0usize;
@@ -187,17 +195,16 @@ pub fn binary_search_eytzinger(layout: &EytzingerLayout, needle: i32) -> Option<
 
 /// Binary search over an Eytzinger layout with prefetching.
 pub fn binary_search_eytzinger_prefetch(layout: &EytzingerLayout, needle: i32) -> Option<usize> {
-    let n = layout.len();
-    if n == 0 {
-        return None;
+    // For small arrays that fit in L1/L2 cache, prefetching adds overhead without benefit
+    if layout.len() < PREFETCH_THRESHOLD_ELEMENTS {
+        return binary_search_eytzinger(layout, needle);
     }
+
+    let n = layout.len();
 
     let mut k = 1usize;
     while k <= n {
-        if let Some(idx) = k
-            .checked_mul(EYT_PREFETCH_DISTANCE)
-            .filter(|&idx| idx <= n)
-        {
+        if let Some(idx) = k.checked_mul(EYT_PREFETCH_DISTANCE).filter(|&idx| idx <= n) {
             prefetch_index(&layout.values, idx);
         }
         // SAFETY: k is in range [1, n] during iteration
@@ -246,11 +253,7 @@ fn prefetch_read_i32(ptr: *const i32) {
         );
     }
 
-    #[cfg(not(any(
-        target_arch = "x86",
-        target_arch = "x86_64",
-        target_arch = "aarch64"
-    )))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     {
         let _ = ptr;
     }
