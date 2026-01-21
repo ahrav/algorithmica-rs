@@ -6,11 +6,12 @@ use std::time::Instant;
 use hpc_algorithms::{
     BLOCK_SIZE, argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar,
     argmin_simd_filtered, argmin_std, argmin_vector_indices, gcd_binary, gcd_scalar,
+    matmul_baseline, matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed,
     prefix_sum_scalar, prefix_sum_scalar_in_place,
 };
 
 #[cfg(target_arch = "aarch64")]
-use hpc_algorithms::{prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
+use hpc_algorithms::{matmul_neon_blocked, prefix_sum, prefix_sum_blocked, prefix_sum_interleaved};
 
 const DEFAULT_SEED: u64 = 0x1234_5678_9ABC_DEF0;
 
@@ -23,6 +24,13 @@ enum Bench {
     ArgminBlocked,
     ArgminSimdIndices,
     ArgminSimdFiltered,
+    MatmulBaseline,
+    MatmulTransposed,
+    MatmulIkj,
+    MatmulRegister2x2,
+    MatmulBlocked,
+    #[cfg(target_arch = "aarch64")]
+    MatmulNeonBlocked,
     GcdScalar,
     GcdBinary,
     PrefixSumScalar,
@@ -45,6 +53,8 @@ struct Config {
     verify: bool,
     report: bool,
 }
+
+type MatmulFn = fn(&[f32], &[f32], &mut [f32], usize);
 
 fn main() {
     let config = match parse_args() {
@@ -161,6 +171,13 @@ fn list_benches() {
     println!("argmin_blocked");
     println!("argmin_simd_indices");
     println!("argmin_simd_filtered");
+    println!("matmul_baseline");
+    println!("matmul_transposed");
+    println!("matmul_ikj");
+    println!("matmul_register_2x2");
+    println!("matmul_blocked");
+    #[cfg(target_arch = "aarch64")]
+    println!("matmul_neon_blocked");
     println!("gcd_scalar");
     println!("gcd_binary");
     println!("prefix_sum_scalar");
@@ -182,6 +199,13 @@ fn parse_bench(name: &str) -> Option<Bench> {
         "argmin_blocked" => Some(Bench::ArgminBlocked),
         "argmin_simd_indices" => Some(Bench::ArgminSimdIndices),
         "argmin_simd_filtered" => Some(Bench::ArgminSimdFiltered),
+        "matmul_baseline" => Some(Bench::MatmulBaseline),
+        "matmul_transposed" => Some(Bench::MatmulTransposed),
+        "matmul_ikj" => Some(Bench::MatmulIkj),
+        "matmul_register_2x2" => Some(Bench::MatmulRegister2x2),
+        "matmul_blocked" => Some(Bench::MatmulBlocked),
+        #[cfg(target_arch = "aarch64")]
+        "matmul_neon_blocked" => Some(Bench::MatmulNeonBlocked),
         "gcd_scalar" => Some(Bench::GcdScalar),
         "gcd_binary" => Some(Bench::GcdBinary),
         "prefix_sum_scalar" => Some(Bench::PrefixSumScalar),
@@ -206,6 +230,13 @@ impl Bench {
             | Bench::ArgminBlocked
             | Bench::ArgminSimdIndices
             | Bench::ArgminSimdFiltered => 1_000_000,
+            Bench::MatmulBaseline
+            | Bench::MatmulTransposed
+            | Bench::MatmulIkj
+            | Bench::MatmulRegister2x2
+            | Bench::MatmulBlocked => 256,
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => 256,
             Bench::GcdScalar | Bench::GcdBinary => 100_000,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 1_000_000,
             #[cfg(target_arch = "aarch64")]
@@ -224,6 +255,13 @@ impl Bench {
             | Bench::ArgminBlocked
             | Bench::ArgminSimdIndices
             | Bench::ArgminSimdFiltered => 10,
+            Bench::MatmulBaseline
+            | Bench::MatmulTransposed
+            | Bench::MatmulIkj
+            | Bench::MatmulRegister2x2
+            | Bench::MatmulBlocked => 3,
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => 3,
             Bench::GcdScalar | Bench::GcdBinary => 100,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 10,
             #[cfg(target_arch = "aarch64")]
@@ -242,6 +280,13 @@ impl Bench {
             Bench::ArgminBlocked => "argmin_blocked",
             Bench::ArgminSimdIndices => "argmin_simd_indices",
             Bench::ArgminSimdFiltered => "argmin_simd_filtered",
+            Bench::MatmulBaseline => "matmul_baseline",
+            Bench::MatmulTransposed => "matmul_transposed",
+            Bench::MatmulIkj => "matmul_ikj",
+            Bench::MatmulRegister2x2 => "matmul_register_2x2",
+            Bench::MatmulBlocked => "matmul_blocked",
+            #[cfg(target_arch = "aarch64")]
+            Bench::MatmulNeonBlocked => "matmul_neon_blocked",
             Bench::GcdScalar => "gcd_scalar",
             Bench::GcdBinary => "gcd_binary",
             Bench::PrefixSumScalar => "prefix_sum_scalar",
@@ -298,6 +343,16 @@ fn make_i32_input(len: usize, seed: u64) -> Vec<i32> {
     values
 }
 
+fn make_f32_matrix(n: usize, seed: u64) -> Vec<f32> {
+    let mut state = seed;
+    let mut values = Vec::with_capacity(n * n);
+    for _ in 0..n * n {
+        let v = (next_u64(&mut state) & 0xFF) as f32;
+        values.push(v / 255.0);
+    }
+    values
+}
+
 fn run_bench(config: Config) {
     let stats = bench_stats(config.bench, &config);
     let start = Instant::now();
@@ -309,6 +364,13 @@ fn run_bench(config: Config) {
         Bench::ArgminBlocked => bench_argmin(config, argmin_blocked),
         Bench::ArgminSimdIndices => bench_argmin(config, argmin_vector_indices),
         Bench::ArgminSimdFiltered => bench_argmin(config, argmin_simd_filtered),
+        Bench::MatmulBaseline => bench_matmul(config, matmul_baseline),
+        Bench::MatmulTransposed => bench_matmul(config, matmul_transposed),
+        Bench::MatmulIkj => bench_matmul(config, matmul_ikj),
+        Bench::MatmulRegister2x2 => bench_matmul(config, matmul_register_blocked_2x2),
+        Bench::MatmulBlocked => bench_matmul(config, matmul_blocked),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => bench_matmul(config, matmul_neon_blocked),
         Bench::GcdScalar => bench_gcd_scalar(config),
         Bench::GcdBinary => bench_gcd_binary(config),
         Bench::PrefixSumScalar => bench_prefix_sum_scalar(config),
@@ -354,6 +416,33 @@ fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
             bytes: work_items * 4 + (BLOCK_SIZE as u128) * (config.iters as u128) * 4,
             unit: "elem",
         },
+        Bench::MatmulBaseline
+        | Bench::MatmulTransposed
+        | Bench::MatmulIkj
+        | Bench::MatmulRegister2x2
+        | Bench::MatmulBlocked => {
+            let n = config.len as u128;
+            let iters = config.iters as u128;
+            let ops = n * n * n * iters;
+            let bytes = n * n * 12u128 * iters;
+            BenchStats {
+                work_items: ops,
+                bytes,
+                unit: "mul",
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => {
+            let n = config.len as u128;
+            let iters = config.iters as u128;
+            let ops = n * n * n * iters;
+            let bytes = n * n * 12u128 * iters;
+            BenchStats {
+                work_items: ops,
+                bytes,
+                unit: "mul",
+            }
+        }
         Bench::GcdScalar | Bench::GcdBinary => BenchStats {
             work_items,
             bytes: work_items * 16,
@@ -380,19 +469,45 @@ fn print_report(bench: Bench, config: &Config, stats: BenchStats, elapsed: std::
     let items_per_s = stats.work_items as f64 / elapsed_s;
     let bytes_per_s = stats.bytes as f64 / elapsed_s;
     let ns_per_item = (elapsed_s * 1.0e9) / stats.work_items as f64;
-    println!(
-        "bench={} len={} iters={} elapsed_s={:.6} work_items={} unit={} ns_per_item={:.3} throughput={} bytes={} byte_throughput={}",
+    let gflops = match bench {
+        Bench::MatmulBaseline
+        | Bench::MatmulTransposed
+        | Bench::MatmulIkj
+        | Bench::MatmulRegister2x2
+        | Bench::MatmulBlocked => Some(format_rate(items_per_s * 2.0, "FLOP")),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => Some(format_rate(items_per_s * 2.0, "FLOP")),
+        _ => None,
+    };
+
+    let mut lines = Vec::with_capacity(5);
+    lines.push(format!(
+        "bench={} len={} iters={}",
         bench.name(),
         config.len,
-        config.iters,
+        config.iters
+    ));
+    lines.push(format!(
+        "elapsed_s={:.6} ns_per_item={:.3} throughput={}",
         elapsed_s,
-        stats.work_items,
-        stats.unit,
         ns_per_item,
-        format_rate(items_per_s, stats.unit),
+        format_rate(items_per_s, stats.unit)
+    ));
+    lines.push(format!(
+        "work_items={} unit={}",
+        stats.work_items, stats.unit
+    ));
+    lines.push(format!(
+        "bytes={} byte_throughput={}",
         stats.bytes,
-        format_rate(bytes_per_s, "B"),
-    );
+        format_rate(bytes_per_s, "B")
+    ));
+
+    if let Some(gflops) = gflops {
+        lines.push(format!("gflops={}", gflops));
+    }
+
+    println!("{}", lines.join("\n"));
 }
 
 fn format_rate(rate: f64, unit: &str) -> String {
@@ -408,6 +523,28 @@ fn format_rate(rate: f64, unit: &str) -> String {
         (rate, "")
     };
     format!("{value:.3} {prefix}{unit}/s")
+}
+
+fn make_small_matrix(n: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(n * n);
+    for i in 0..n {
+        for j in 0..n {
+            out.push(((i * 3 + j * 5) % 7) as f32);
+        }
+    }
+    out
+}
+
+fn verify_matmul_variant(func: MatmulFn) {
+    let n = 5;
+    let a = make_small_matrix(n);
+    let b = make_small_matrix(n);
+    let mut expected = vec![0.0f32; n * n];
+    matmul_baseline(&a, &b, &mut expected, n);
+
+    let mut out = vec![0.0f32; n * n];
+    func(&a, &b, &mut out, n);
+    assert_eq!(out, expected);
 }
 
 fn verify_bench(bench: Bench) {
@@ -440,6 +577,13 @@ fn verify_bench(bench: Bench) {
             let values = [3, 1, 2, 1];
             assert_eq!(argmin_simd_filtered(&values), Some(1));
         }
+        Bench::MatmulBaseline => verify_matmul_variant(matmul_baseline),
+        Bench::MatmulTransposed => verify_matmul_variant(matmul_transposed),
+        Bench::MatmulIkj => verify_matmul_variant(matmul_ikj),
+        Bench::MatmulRegister2x2 => verify_matmul_variant(matmul_register_blocked_2x2),
+        Bench::MatmulBlocked => verify_matmul_variant(matmul_blocked),
+        #[cfg(target_arch = "aarch64")]
+        Bench::MatmulNeonBlocked => verify_matmul_variant(matmul_neon_blocked),
         Bench::GcdScalar => {
             let g = gcd_scalar(21, 14);
             assert_eq!(g, 7);
@@ -491,6 +635,25 @@ fn bench_argmin(config: Config, func: fn(&[i32]) -> Option<usize>) {
         if let Some(idx) = func(black_box(&input)) {
             acc ^= idx;
         }
+    }
+    black_box(acc);
+}
+
+fn bench_matmul(config: Config, func: MatmulFn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let n = config.len;
+    let a = make_f32_matrix(n, config.seed);
+    let b = make_f32_matrix(n, config.seed ^ 0x9E37_79B9_7F4A_7C15);
+    let mut c = vec![0.0f32; n * n];
+    let sample = (n / 2) * n + (n / 2);
+
+    let mut acc = 0.0f64;
+    for _ in 0..config.iters {
+        func(black_box(&a), black_box(&b), black_box(&mut c), n);
+        acc += c[sample] as f64;
     }
     black_box(acc);
 }

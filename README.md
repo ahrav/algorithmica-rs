@@ -6,6 +6,7 @@ Rust implementations of algorithms from [Algorithms for Modern Hardware](https:/
 
 - **Argmin**: Scalar, SIMD-backed (AVX2/AVX-512/NEON), min+find, and blocked variants
 - **GCD**: Euclidean vs Binary (Stein's algorithm)
+- **Matrix Multiplication**: Baseline, transposed, loop-reordered, register-blocked, cache-blocked, NEON-blocked (aarch64)
 - **Prefix Sum**: Scalar vs NEON SIMD (aarch64)
 
 ## Benchmarks
@@ -17,6 +18,7 @@ cargo bench
 # Run specific algorithm
 cargo bench -- gcd
 cargo bench -- argmin
+cargo bench -- matmul
 cargo bench -- prefix_sum
 
 # Opt-in AVX-512 path for argmin on x86_64
