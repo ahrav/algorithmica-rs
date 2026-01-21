@@ -4,10 +4,12 @@ use std::process;
 use std::time::Instant;
 
 use hpc_algorithms::{
-    BLOCK_SIZE, argmin_blocked, argmin_branchless, argmin_min_then_find, argmin_scalar,
-    argmin_simd_filtered, argmin_std, argmin_vector_indices, gcd_binary, gcd_scalar,
-    matmul_baseline, matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed,
-    prefix_sum_scalar, prefix_sum_scalar_in_place,
+    BLOCK_SIZE, EytzingerLayout, argmin_blocked, argmin_branchless, argmin_min_then_find,
+    argmin_scalar, argmin_simd_filtered, argmin_std, argmin_vector_indices,
+    binary_search_branchless, binary_search_branchless_prefetch, binary_search_eytzinger,
+    binary_search_eytzinger_prefetch, binary_search_std, gcd_binary, gcd_scalar, matmul_baseline,
+    matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed, prefix_sum_scalar,
+    prefix_sum_scalar_in_place,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -24,6 +26,11 @@ enum Bench {
     ArgminBlocked,
     ArgminSimdIndices,
     ArgminSimdFiltered,
+    BinarySearchStd,
+    BinarySearchBranchless,
+    BinarySearchBranchlessPrefetch,
+    BinarySearchEytzinger,
+    BinarySearchEytzingerPrefetch,
     MatmulBaseline,
     MatmulTransposed,
     MatmulIkj,
@@ -54,6 +61,8 @@ struct Config {
     report: bool,
 }
 
+type BinarySearchFn = fn(&[i32], i32) -> Option<usize>;
+type BinarySearchEytzingerFn = fn(&EytzingerLayout, i32) -> Option<usize>;
 type MatmulFn = fn(&[f32], &[f32], &mut [f32], usize);
 
 fn main() {
@@ -171,6 +180,11 @@ fn list_benches() {
     println!("argmin_blocked");
     println!("argmin_simd_indices");
     println!("argmin_simd_filtered");
+    println!("binary_search_std");
+    println!("binary_search_branchless");
+    println!("binary_search_branchless_prefetch");
+    println!("binary_search_eytzinger");
+    println!("binary_search_eytzinger_prefetch");
     println!("matmul_baseline");
     println!("matmul_transposed");
     println!("matmul_ikj");
@@ -199,6 +213,11 @@ fn parse_bench(name: &str) -> Option<Bench> {
         "argmin_blocked" => Some(Bench::ArgminBlocked),
         "argmin_simd_indices" => Some(Bench::ArgminSimdIndices),
         "argmin_simd_filtered" => Some(Bench::ArgminSimdFiltered),
+        "binary_search_std" => Some(Bench::BinarySearchStd),
+        "binary_search_branchless" => Some(Bench::BinarySearchBranchless),
+        "binary_search_branchless_prefetch" => Some(Bench::BinarySearchBranchlessPrefetch),
+        "binary_search_eytzinger" => Some(Bench::BinarySearchEytzinger),
+        "binary_search_eytzinger_prefetch" => Some(Bench::BinarySearchEytzingerPrefetch),
         "matmul_baseline" => Some(Bench::MatmulBaseline),
         "matmul_transposed" => Some(Bench::MatmulTransposed),
         "matmul_ikj" => Some(Bench::MatmulIkj),
@@ -229,7 +248,12 @@ impl Bench {
             | Bench::ArgminMinThenFind
             | Bench::ArgminBlocked
             | Bench::ArgminSimdIndices
-            | Bench::ArgminSimdFiltered => 1_000_000,
+            | Bench::ArgminSimdFiltered
+            | Bench::BinarySearchStd
+            | Bench::BinarySearchBranchless
+            | Bench::BinarySearchBranchlessPrefetch
+            | Bench::BinarySearchEytzinger
+            | Bench::BinarySearchEytzingerPrefetch => 1_000_000,
             Bench::MatmulBaseline
             | Bench::MatmulTransposed
             | Bench::MatmulIkj
@@ -255,6 +279,11 @@ impl Bench {
             | Bench::ArgminBlocked
             | Bench::ArgminSimdIndices
             | Bench::ArgminSimdFiltered => 10,
+            Bench::BinarySearchStd
+            | Bench::BinarySearchBranchless
+            | Bench::BinarySearchBranchlessPrefetch
+            | Bench::BinarySearchEytzinger
+            | Bench::BinarySearchEytzingerPrefetch => 5,
             Bench::MatmulBaseline
             | Bench::MatmulTransposed
             | Bench::MatmulIkj
@@ -280,6 +309,11 @@ impl Bench {
             Bench::ArgminBlocked => "argmin_blocked",
             Bench::ArgminSimdIndices => "argmin_simd_indices",
             Bench::ArgminSimdFiltered => "argmin_simd_filtered",
+            Bench::BinarySearchStd => "binary_search_std",
+            Bench::BinarySearchBranchless => "binary_search_branchless",
+            Bench::BinarySearchBranchlessPrefetch => "binary_search_branchless_prefetch",
+            Bench::BinarySearchEytzinger => "binary_search_eytzinger",
+            Bench::BinarySearchEytzingerPrefetch => "binary_search_eytzinger_prefetch",
             Bench::MatmulBaseline => "matmul_baseline",
             Bench::MatmulTransposed => "matmul_transposed",
             Bench::MatmulIkj => "matmul_ikj",
@@ -343,6 +377,24 @@ fn make_i32_input(len: usize, seed: u64) -> Vec<i32> {
     values
 }
 
+fn make_sorted_values(len: usize) -> Vec<i32> {
+    let mut values = Vec::with_capacity(len);
+    for i in 0..len {
+        values.push((i as i32) * 2);
+    }
+    values
+}
+
+fn make_search_queries(values: &[i32], seed: u64) -> Vec<i32> {
+    let mut state = seed;
+    let mut queries = Vec::with_capacity(values.len());
+    for _ in 0..values.len() {
+        let idx = (next_u64(&mut state) as usize) % values.len();
+        queries.push(values[idx]);
+    }
+    queries
+}
+
 fn make_f32_matrix(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
     let mut values = Vec::with_capacity(n * n);
@@ -364,6 +416,17 @@ fn run_bench(config: Config) {
         Bench::ArgminBlocked => bench_argmin(config, argmin_blocked),
         Bench::ArgminSimdIndices => bench_argmin(config, argmin_vector_indices),
         Bench::ArgminSimdFiltered => bench_argmin(config, argmin_simd_filtered),
+        Bench::BinarySearchStd => bench_binary_search(config, binary_search_std),
+        Bench::BinarySearchBranchless => bench_binary_search(config, binary_search_branchless),
+        Bench::BinarySearchBranchlessPrefetch => {
+            bench_binary_search(config, binary_search_branchless_prefetch);
+        }
+        Bench::BinarySearchEytzinger => {
+            bench_binary_search_eytzinger(config, binary_search_eytzinger);
+        }
+        Bench::BinarySearchEytzingerPrefetch => {
+            bench_binary_search_eytzinger(config, binary_search_eytzinger_prefetch);
+        }
         Bench::MatmulBaseline => bench_matmul(config, matmul_baseline),
         Bench::MatmulTransposed => bench_matmul(config, matmul_transposed),
         Bench::MatmulIkj => bench_matmul(config, matmul_ikj),
@@ -405,6 +468,15 @@ fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
             work_items,
             bytes: work_items * 4,
             unit: "elem",
+        },
+        Bench::BinarySearchStd
+        | Bench::BinarySearchBranchless
+        | Bench::BinarySearchBranchlessPrefetch
+        | Bench::BinarySearchEytzinger
+        | Bench::BinarySearchEytzingerPrefetch => BenchStats {
+            work_items,
+            bytes: work_items * 4,
+            unit: "query",
         },
         Bench::ArgminMinThenFind => BenchStats {
             work_items,
@@ -577,6 +649,33 @@ fn verify_bench(bench: Bench) {
             let values = [3, 1, 2, 1];
             assert_eq!(argmin_simd_filtered(&values), Some(1));
         }
+        Bench::BinarySearchStd => {
+            let values = [1, 3, 5, 7, 9];
+            assert_eq!(binary_search_std(&values, 5), Some(2));
+            assert_eq!(binary_search_std(&values, 6), None);
+        }
+        Bench::BinarySearchBranchless => {
+            let values = [1, 3, 5, 7, 9];
+            assert_eq!(binary_search_branchless(&values, 5), Some(2));
+            assert_eq!(binary_search_branchless(&values, 6), None);
+        }
+        Bench::BinarySearchBranchlessPrefetch => {
+            let values = [1, 3, 5, 7, 9];
+            assert_eq!(binary_search_branchless_prefetch(&values, 5), Some(2));
+            assert_eq!(binary_search_branchless_prefetch(&values, 6), None);
+        }
+        Bench::BinarySearchEytzinger => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = EytzingerLayout::new(&values);
+            assert_eq!(binary_search_eytzinger(&layout, 5), Some(2));
+            assert_eq!(binary_search_eytzinger(&layout, 6), None);
+        }
+        Bench::BinarySearchEytzingerPrefetch => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = EytzingerLayout::new(&values);
+            assert_eq!(binary_search_eytzinger_prefetch(&layout, 5), Some(2));
+            assert_eq!(binary_search_eytzinger_prefetch(&layout, 6), None);
+        }
         Bench::MatmulBaseline => verify_matmul_variant(matmul_baseline),
         Bench::MatmulTransposed => verify_matmul_variant(matmul_transposed),
         Bench::MatmulIkj => verify_matmul_variant(matmul_ikj),
@@ -634,6 +733,45 @@ fn bench_argmin(config: Config, func: fn(&[i32]) -> Option<usize>) {
     for _ in 0..config.iters {
         if let Some(idx) = func(black_box(&input)) {
             acc ^= idx;
+        }
+    }
+    black_box(acc);
+}
+
+fn bench_binary_search(config: Config, func: BinarySearchFn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let values = make_sorted_values(config.len);
+    let queries = make_search_queries(&values, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        let haystack = black_box(values.as_slice());
+        for &q in &queries {
+            if let Some(idx) = func(haystack, black_box(q)) {
+                acc ^= idx;
+            }
+        }
+    }
+    black_box(acc);
+}
+
+fn bench_binary_search_eytzinger(config: Config, func: BinarySearchEytzingerFn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let values = make_sorted_values(config.len);
+    let layout = EytzingerLayout::new(&values);
+    let queries = make_search_queries(&values, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        let layout = black_box(&layout);
+        for &q in &queries {
+            if let Some(idx) = func(layout, black_box(q)) {
+                acc ^= idx;
+            }
         }
     }
     black_box(acc);
