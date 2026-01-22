@@ -9,7 +9,7 @@
 //! - **GCD** ([`gcd_scalar`], [`gcd_binary`]) — Euclidean and binary (Stein's) algorithms
 //! - **Argmin** ([`argmin_scalar`], [`argmin_simd_filtered`], etc.) — Finding the minimum index
 //! - **Binary Search** ([`binary_search_std`], [`binary_search_eytzinger`], etc.) — Branchless and layout-aware search
-//! - **S-tree / S+ tree** ([`s_tree_search_neon`], [`s_plus_tree_search_neon`]) — Implicit B-tree/B+ tree layouts
+//! - **S-tree / S+ tree** ([`s_tree_search_neon`], [`s_plus_tree_search_neon`]) — Implicit B-tree/B+ tree layouts (B=16/32)
 //! - **Matrix Multiplication** ([`matmul_baseline`], [`matmul_blocked`], etc.) — Cache-aware GEMM
 //! - **Prefix Sum** ([`prefix_sum_scalar`], [`prefix_sum`]) — Inclusive prefix sums with SIMD
 //!

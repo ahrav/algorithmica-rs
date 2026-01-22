@@ -6,7 +6,7 @@ Rust implementations of algorithms from [Algorithms for Modern Hardware](https:/
 
 - **Argmin**: Scalar, SIMD-backed (AVX2/AVX-512/NEON), min+find, and blocked variants
 - **Binary Search**: Stdlib, branchless, branchless+prefetch, Eytzinger layout, Eytzinger+prefetch
-- **S-tree / S+ tree**: Implicit B-tree and B+ tree layouts with scalar and NEON search
+- **S-tree / S+ tree**: Implicit B-tree and B+ tree layouts (B=16, B=32) with scalar and NEON search
 - **GCD**: Euclidean vs Binary (Stein's algorithm)
 - **Matrix Multiplication**: Baseline, transposed, loop-reordered, register-blocked, cache-blocked, NEON-blocked (aarch64)
 - **Prefix Sum**: Scalar vs NEON SIMD (aarch64)
