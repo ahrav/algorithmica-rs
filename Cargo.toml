@@ -28,3 +28,7 @@ harness = false
 [[bench]]
 name = "binary_search"
 harness = false
+
+[[bench]]
+name = "s_tree"
+harness = false
