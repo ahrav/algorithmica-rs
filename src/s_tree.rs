@@ -694,37 +694,28 @@ mod neon_rank {
         c2: uint32x4_t,
         c3: uint32x4_t,
     ) -> u32 {
-        unsafe {
-            let n0 = vmovn_u32(vshrq_n_u32(c0, 31));
-            let n1 = vmovn_u32(vshrq_n_u32(c1, 31));
-            let n2 = vmovn_u32(vshrq_n_u32(c2, 31));
-            let n3 = vmovn_u32(vshrq_n_u32(c3, 31));
+        let n0 = vmovn_u32(vshrq_n_u32(c0, 31));
+        let n1 = vmovn_u32(vshrq_n_u32(c1, 31));
+        let n2 = vmovn_u32(vshrq_n_u32(c2, 31));
+        let n3 = vmovn_u32(vshrq_n_u32(c3, 31));
 
-            let p0 = vcombine_u16(n0, n1);
-            let p1 = vcombine_u16(n2, n3);
-            let q0 = vmovn_u16(p0);
-            let q1 = vmovn_u16(p1);
-            let bytes = vcombine_u8(q0, q1);
+        let p0 = vcombine_u16(n0, n1);
+        let p1 = vcombine_u16(n2, n3);
+        let q0 = vmovn_u16(p0);
+        let q1 = vmovn_u16(p1);
+        let bytes = vcombine_u8(q0, q1);
 
-            let mut out = [0u8; 16];
-            vst1q_u8(out.as_mut_ptr(), bytes);
-
-            let lo = pack8(&out[0..8]);
-            let hi = pack8(&out[8..16]);
-            lo | (hi << 8)
-        }
+        let lanes = vreinterpretq_u64_u8(bytes);
+        let lo = vgetq_lane_u64(lanes, 0);
+        let hi = vgetq_lane_u64(lanes, 1);
+        pack8_u64(lo) | (pack8_u64(hi) << 8)
     }
 
     #[inline]
-    fn pack8(bytes: &[u8]) -> u32 {
-        (bytes[0] as u32)
-            | ((bytes[1] as u32) << 1)
-            | ((bytes[2] as u32) << 2)
-            | ((bytes[3] as u32) << 3)
-            | ((bytes[4] as u32) << 4)
-            | ((bytes[5] as u32) << 5)
-            | ((bytes[6] as u32) << 6)
-            | ((bytes[7] as u32) << 7)
+    fn pack8_u64(x: u64) -> u32 {
+        const MASK: u64 = 0x0101_0101_0101_0101;
+        const MUL: u64 = 0x0102_0408_1020_4080;
+        (((x & MASK).wrapping_mul(MUL)) >> 56) as u32
     }
 }
 
