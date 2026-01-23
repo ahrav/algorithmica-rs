@@ -4,12 +4,14 @@ use std::process;
 use std::time::Instant;
 
 use hpc_algorithms::{
-    BLOCK_SIZE, EytzingerLayout, argmin_blocked, argmin_branchless, argmin_min_then_find,
-    argmin_scalar, argmin_simd_filtered, argmin_std, argmin_vector_indices,
-    binary_search_branchless, binary_search_branchless_prefetch, binary_search_eytzinger,
-    binary_search_eytzinger_prefetch, binary_search_std, gcd_binary, gcd_scalar, matmul_baseline,
-    matmul_blocked, matmul_ikj, matmul_register_blocked_2x2, matmul_transposed, prefix_sum_scalar,
-    prefix_sum_scalar_in_place,
+    BLOCK_SIZE, EytzingerLayout, SPlusTree32Layout, SPlusTreeLayout, STreeLayout, argmin_blocked,
+    argmin_branchless, argmin_min_then_find, argmin_scalar, argmin_simd_filtered, argmin_std,
+    argmin_vector_indices, binary_search_branchless, binary_search_branchless_prefetch,
+    binary_search_eytzinger, binary_search_eytzinger_prefetch, binary_search_std, gcd_binary,
+    gcd_scalar, matmul_baseline, matmul_blocked, matmul_ikj, matmul_register_blocked_2x2,
+    matmul_transposed, prefix_sum_scalar, prefix_sum_scalar_in_place, s_plus_tree_search_neon,
+    s_plus_tree_search_scalar, s_plus_tree32_search_neon, s_plus_tree32_search_scalar,
+    s_tree_search_neon, s_tree_search_scalar,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -31,6 +33,12 @@ enum Bench {
     BinarySearchBranchlessPrefetch,
     BinarySearchEytzinger,
     BinarySearchEytzingerPrefetch,
+    STreeScalar,
+    STreeNeon,
+    SPlusTreeScalar,
+    SPlusTreeNeon,
+    SPlusTree32Scalar,
+    SPlusTree32Neon,
     MatmulBaseline,
     MatmulTransposed,
     MatmulIkj,
@@ -63,6 +71,9 @@ struct Config {
 
 type BinarySearchFn = fn(&[i32], i32) -> Option<usize>;
 type BinarySearchEytzingerFn = fn(&EytzingerLayout, i32) -> Option<usize>;
+type STreeFn = fn(&STreeLayout, i32) -> Option<usize>;
+type SPlusTreeFn = fn(&SPlusTreeLayout, i32) -> Option<usize>;
+type SPlusTree32Fn = fn(&SPlusTree32Layout, i32) -> Option<usize>;
 type MatmulFn = fn(&[f32], &[f32], &mut [f32], usize);
 
 fn main() {
@@ -185,6 +196,12 @@ fn list_benches() {
     println!("binary_search_branchless_prefetch");
     println!("binary_search_eytzinger");
     println!("binary_search_eytzinger_prefetch");
+    println!("s_tree_scalar");
+    println!("s_tree_neon");
+    println!("s_plus_tree_scalar");
+    println!("s_plus_tree_neon");
+    println!("s_plus_tree32_scalar");
+    println!("s_plus_tree32_neon");
     println!("matmul_baseline");
     println!("matmul_transposed");
     println!("matmul_ikj");
@@ -218,6 +235,12 @@ fn parse_bench(name: &str) -> Option<Bench> {
         "binary_search_branchless_prefetch" => Some(Bench::BinarySearchBranchlessPrefetch),
         "binary_search_eytzinger" => Some(Bench::BinarySearchEytzinger),
         "binary_search_eytzinger_prefetch" => Some(Bench::BinarySearchEytzingerPrefetch),
+        "s_tree_scalar" => Some(Bench::STreeScalar),
+        "s_tree_neon" => Some(Bench::STreeNeon),
+        "s_plus_tree_scalar" => Some(Bench::SPlusTreeScalar),
+        "s_plus_tree_neon" => Some(Bench::SPlusTreeNeon),
+        "s_plus_tree32_scalar" => Some(Bench::SPlusTree32Scalar),
+        "s_plus_tree32_neon" => Some(Bench::SPlusTree32Neon),
         "matmul_baseline" => Some(Bench::MatmulBaseline),
         "matmul_transposed" => Some(Bench::MatmulTransposed),
         "matmul_ikj" => Some(Bench::MatmulIkj),
@@ -253,7 +276,13 @@ impl Bench {
             | Bench::BinarySearchBranchless
             | Bench::BinarySearchBranchlessPrefetch
             | Bench::BinarySearchEytzinger
-            | Bench::BinarySearchEytzingerPrefetch => 1_000_000,
+            | Bench::BinarySearchEytzingerPrefetch
+            | Bench::STreeScalar
+            | Bench::STreeNeon
+            | Bench::SPlusTreeScalar
+            | Bench::SPlusTreeNeon
+            | Bench::SPlusTree32Scalar
+            | Bench::SPlusTree32Neon => 1_000_000,
             Bench::MatmulBaseline
             | Bench::MatmulTransposed
             | Bench::MatmulIkj
@@ -283,7 +312,13 @@ impl Bench {
             | Bench::BinarySearchBranchless
             | Bench::BinarySearchBranchlessPrefetch
             | Bench::BinarySearchEytzinger
-            | Bench::BinarySearchEytzingerPrefetch => 5,
+            | Bench::BinarySearchEytzingerPrefetch
+            | Bench::STreeScalar
+            | Bench::STreeNeon
+            | Bench::SPlusTreeScalar
+            | Bench::SPlusTreeNeon
+            | Bench::SPlusTree32Scalar
+            | Bench::SPlusTree32Neon => 5,
             Bench::MatmulBaseline
             | Bench::MatmulTransposed
             | Bench::MatmulIkj
@@ -314,6 +349,12 @@ impl Bench {
             Bench::BinarySearchBranchlessPrefetch => "binary_search_branchless_prefetch",
             Bench::BinarySearchEytzinger => "binary_search_eytzinger",
             Bench::BinarySearchEytzingerPrefetch => "binary_search_eytzinger_prefetch",
+            Bench::STreeScalar => "s_tree_scalar",
+            Bench::STreeNeon => "s_tree_neon",
+            Bench::SPlusTreeScalar => "s_plus_tree_scalar",
+            Bench::SPlusTreeNeon => "s_plus_tree_neon",
+            Bench::SPlusTree32Scalar => "s_plus_tree32_scalar",
+            Bench::SPlusTree32Neon => "s_plus_tree32_neon",
             Bench::MatmulBaseline => "matmul_baseline",
             Bench::MatmulTransposed => "matmul_transposed",
             Bench::MatmulIkj => "matmul_ikj",
@@ -427,6 +468,12 @@ fn run_bench(config: Config) {
         Bench::BinarySearchEytzingerPrefetch => {
             bench_binary_search_eytzinger(config, binary_search_eytzinger_prefetch);
         }
+        Bench::STreeScalar => bench_s_tree(config, s_tree_search_scalar),
+        Bench::STreeNeon => bench_s_tree(config, s_tree_search_neon),
+        Bench::SPlusTreeScalar => bench_s_plus_tree(config, s_plus_tree_search_scalar),
+        Bench::SPlusTreeNeon => bench_s_plus_tree(config, s_plus_tree_search_neon),
+        Bench::SPlusTree32Scalar => bench_s_plus_tree32(config, s_plus_tree32_search_scalar),
+        Bench::SPlusTree32Neon => bench_s_plus_tree32(config, s_plus_tree32_search_neon),
         Bench::MatmulBaseline => bench_matmul(config, matmul_baseline),
         Bench::MatmulTransposed => bench_matmul(config, matmul_transposed),
         Bench::MatmulIkj => bench_matmul(config, matmul_ikj),
@@ -473,7 +520,13 @@ fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
         | Bench::BinarySearchBranchless
         | Bench::BinarySearchBranchlessPrefetch
         | Bench::BinarySearchEytzinger
-        | Bench::BinarySearchEytzingerPrefetch => BenchStats {
+        | Bench::BinarySearchEytzingerPrefetch
+        | Bench::STreeScalar
+        | Bench::STreeNeon
+        | Bench::SPlusTreeScalar
+        | Bench::SPlusTreeNeon
+        | Bench::SPlusTree32Scalar
+        | Bench::SPlusTree32Neon => BenchStats {
             work_items,
             bytes: work_items * 4,
             unit: "query",
@@ -676,6 +729,42 @@ fn verify_bench(bench: Bench) {
             assert_eq!(binary_search_eytzinger_prefetch(&layout, 5), Some(2));
             assert_eq!(binary_search_eytzinger_prefetch(&layout, 6), None);
         }
+        Bench::STreeScalar => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = STreeLayout::new(&values);
+            assert_eq!(s_tree_search_scalar(&layout, 5), Some(2));
+            assert_eq!(s_tree_search_scalar(&layout, 6), None);
+        }
+        Bench::STreeNeon => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = STreeLayout::new(&values);
+            assert_eq!(s_tree_search_neon(&layout, 5), Some(2));
+            assert_eq!(s_tree_search_neon(&layout, 6), None);
+        }
+        Bench::SPlusTreeScalar => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = SPlusTreeLayout::new(&values);
+            assert_eq!(s_plus_tree_search_scalar(&layout, 5), Some(2));
+            assert_eq!(s_plus_tree_search_scalar(&layout, 6), None);
+        }
+        Bench::SPlusTreeNeon => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = SPlusTreeLayout::new(&values);
+            assert_eq!(s_plus_tree_search_neon(&layout, 5), Some(2));
+            assert_eq!(s_plus_tree_search_neon(&layout, 6), None);
+        }
+        Bench::SPlusTree32Scalar => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = SPlusTree32Layout::new(&values);
+            assert_eq!(s_plus_tree32_search_scalar(&layout, 5), Some(2));
+            assert_eq!(s_plus_tree32_search_scalar(&layout, 6), None);
+        }
+        Bench::SPlusTree32Neon => {
+            let values = [1, 3, 5, 7, 9];
+            let layout = SPlusTree32Layout::new(&values);
+            assert_eq!(s_plus_tree32_search_neon(&layout, 5), Some(2));
+            assert_eq!(s_plus_tree32_search_neon(&layout, 6), None);
+        }
         Bench::MatmulBaseline => verify_matmul_variant(matmul_baseline),
         Bench::MatmulTransposed => verify_matmul_variant(matmul_transposed),
         Bench::MatmulIkj => verify_matmul_variant(matmul_ikj),
@@ -764,6 +853,66 @@ fn bench_binary_search_eytzinger(config: Config, func: BinarySearchEytzingerFn) 
 
     let values = make_sorted_values(config.len);
     let layout = EytzingerLayout::new(&values);
+    let queries = make_search_queries(&values, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        let layout = black_box(&layout);
+        for &q in &queries {
+            if let Some(idx) = func(layout, black_box(q)) {
+                acc ^= idx;
+            }
+        }
+    }
+    black_box(acc);
+}
+
+fn bench_s_tree(config: Config, func: STreeFn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let values = make_sorted_values(config.len);
+    let layout = STreeLayout::new(&values);
+    let queries = make_search_queries(&values, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        let layout = black_box(&layout);
+        for &q in &queries {
+            if let Some(idx) = func(layout, black_box(q)) {
+                acc ^= idx;
+            }
+        }
+    }
+    black_box(acc);
+}
+
+fn bench_s_plus_tree(config: Config, func: SPlusTreeFn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let values = make_sorted_values(config.len);
+    let layout = SPlusTreeLayout::new(&values);
+    let queries = make_search_queries(&values, config.seed);
+    let mut acc = 0usize;
+    for _ in 0..config.iters {
+        let layout = black_box(&layout);
+        for &q in &queries {
+            if let Some(idx) = func(layout, black_box(q)) {
+                acc ^= idx;
+            }
+        }
+    }
+    black_box(acc);
+}
+
+fn bench_s_plus_tree32(config: Config, func: SPlusTree32Fn) {
+    if config.len == 0 {
+        return;
+    }
+
+    let values = make_sorted_values(config.len);
+    let layout = SPlusTree32Layout::new(&values);
     let queries = make_search_queries(&values, config.seed);
     let mut acc = 0usize;
     for _ in 0..config.iters {
