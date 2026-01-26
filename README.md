@@ -10,7 +10,7 @@ Rust implementations of algorithms from [Algorithms for Modern Hardware](https:/
 - **GCD**: Euclidean vs Binary (Stein's algorithm)
 - **Matrix Multiplication**: Baseline, transposed, loop-reordered, register-blocked, cache-blocked, NEON-blocked (aarch64)
 - **Prefix Sum**: Scalar vs NEON SIMD (aarch64)
-- **Shannon Entropy**: Byte-frequency histogram (bits)
+- **Shannon Entropy**: Canonical histogram + interleaved variant (bits)
 
 ## Benchmarks
 

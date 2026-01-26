@@ -12,7 +12,7 @@
 //! - **S-tree / S+ tree** ([`s_tree_search_neon`], [`s_plus_tree_search_neon`]) — Implicit B-tree/B+ tree layouts (B=16/32)
 //! - **Matrix Multiplication** ([`matmul_baseline`], [`matmul_blocked`], etc.) — Cache-aware GEMM
 //! - **Prefix Sum** ([`prefix_sum_scalar`], [`prefix_sum`]) — Inclusive prefix sums with SIMD
-//! - **Shannon Entropy** ([`shannon_entropy`]) — Byte-frequency entropy in bits
+//! - **Shannon Entropy** ([`shannon_entropy`], [`entropy_interleaved`]) — Byte-frequency entropy in bits
 //!
 //! # References
 //!
