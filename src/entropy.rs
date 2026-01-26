@@ -106,6 +106,80 @@ pub fn entropy_interleaved(data: &[u8]) -> f64 {
     n_f.log2() - (sum_cnt_log / n_f)
 }
 
+#[cfg(target_arch = "aarch64")]
+mod neon_entropy {
+    use super::shannon_entropy;
+    use std::arch::aarch64::*;
+
+    const LANES: usize = 8;
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn entropy_interleaved_neon(data: &[u8]) -> f64 {
+        let n = data.len();
+        if n == 0 {
+            return 0.0;
+        }
+
+        if n > (u32::MAX as usize) {
+            return shannon_entropy(data);
+        }
+
+        let mut lane_hist = [[0u32; 256]; LANES];
+        let mut i = 0usize;
+        let mut buf = [0u8; 16];
+
+        while i + 16 <= n {
+            let ptr = data[i..].as_ptr();
+            let v = unsafe { vld1q_u8(ptr) };
+            unsafe { vst1q_u8(buf.as_mut_ptr(), v) };
+
+            for lane in 0..LANES {
+                let a = buf[lane];
+                let b = buf[lane + LANES];
+                lane_hist[lane][a as usize] += 1;
+                lane_hist[lane][b as usize] += 1;
+            }
+
+            i += 16;
+        }
+
+        while i < n {
+            let byte = data[i];
+            lane_hist[0][byte as usize] += 1;
+            i += 1;
+        }
+
+        let mut hist = [0u32; 256];
+        for lane_counts in &lane_hist {
+            for (v, count) in lane_counts.iter().enumerate() {
+                hist[v] += count;
+            }
+        }
+
+        let mut sum_cnt_log = 0.0f64;
+        for &c in &hist {
+            if c != 0 {
+                let cf = c as f64;
+                sum_cnt_log += cf * cf.log2();
+            }
+        }
+
+        let n_f = n as f64;
+        n_f.log2() - (sum_cnt_log / n_f)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn entropy_interleaved_neon(data: &[u8]) -> f64 {
+    // SAFETY: aarch64 guarantees NEON availability.
+    unsafe { neon_entropy::entropy_interleaved_neon(data) }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn entropy_interleaved_neon(_: &[u8]) -> f64 {
+    panic!("This implementation requires aarch64");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +255,16 @@ mod tests {
             let doubled_interleaved = entropy_interleaved(&doubled);
             prop_assert!(approx_eq(base, doubled_entropy));
             prop_assert!(approx_eq(base_interleaved, doubled_interleaved));
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    proptest! {
+        #[test]
+        fn entropy_neon_matches_reference(values in proptest::collection::vec(any::<u8>(), 0..=4096)) {
+            let neon = entropy_interleaved_neon(&values);
+            let expected = reference_entropy(&values);
+            prop_assert!(approx_eq(neon, expected));
         }
     }
 

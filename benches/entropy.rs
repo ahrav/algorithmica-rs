@@ -1,4 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+#[cfg(target_arch = "aarch64")]
+use hpc_algorithms::entropy_interleaved_neon;
 use hpc_algorithms::{entropy_interleaved, shannon_entropy};
 
 const INPUT_SIZES: &[(&str, usize)] = &[
@@ -57,6 +59,8 @@ fn bench_variant(c: &mut Criterion, name: &str, func: fn(&[u8]) -> f64) {
 fn bench_entropy(c: &mut Criterion) {
     bench_variant(c, "shannon_entropy", shannon_entropy);
     bench_variant(c, "entropy_interleaved", entropy_interleaved);
+    #[cfg(target_arch = "aarch64")]
+    bench_variant(c, "entropy_interleaved_neon", entropy_interleaved_neon);
 }
 
 criterion_group!(benches, bench_entropy);
