@@ -22,6 +22,10 @@ name = "argmin"
 harness = false
 
 [[bench]]
+name = "entropy"
+harness = false
+
+[[bench]]
 name = "matmul"
 harness = false
 
