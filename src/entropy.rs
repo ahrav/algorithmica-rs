@@ -111,7 +111,7 @@ mod neon_entropy {
     use super::shannon_entropy;
     use std::arch::aarch64::*;
 
-    const LANES: usize = 8;
+    const LANES: usize = 4;
 
     #[target_feature(enable = "neon")]
     pub unsafe fn entropy_interleaved_neon(data: &[u8]) -> f64 {
@@ -134,10 +134,12 @@ mod neon_entropy {
             unsafe { vst1q_u8(buf.as_mut_ptr(), v) };
 
             for lane in 0..LANES {
-                let a = buf[lane];
-                let b = buf[lane + LANES];
-                lane_hist[lane][a as usize] += 1;
-                lane_hist[lane][b as usize] += 1;
+                let mut idx = lane;
+                while idx < 16 {
+                    let byte = buf[idx];
+                    lane_hist[lane][byte as usize] += 1;
+                    idx += LANES;
+                }
             }
 
             i += 16;
