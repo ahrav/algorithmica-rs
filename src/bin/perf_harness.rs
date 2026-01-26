@@ -11,7 +11,7 @@ use hpc_algorithms::{
     gcd_scalar, matmul_baseline, matmul_blocked, matmul_ikj, matmul_register_blocked_2x2,
     matmul_transposed, prefix_sum_scalar, prefix_sum_scalar_in_place, s_plus_tree_search_neon,
     s_plus_tree_search_scalar, s_plus_tree32_search_neon, s_plus_tree32_search_scalar,
-    s_tree_search_neon, s_tree_search_scalar,
+    s_tree_search_neon, s_tree_search_scalar, shannon_entropy,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -48,6 +48,7 @@ enum Bench {
     MatmulNeonBlocked,
     GcdScalar,
     GcdBinary,
+    ShannonEntropy,
     PrefixSumScalar,
     PrefixSumScalarInPlace,
     #[cfg(target_arch = "aarch64")]
@@ -211,6 +212,7 @@ fn list_benches() {
     println!("matmul_neon_blocked");
     println!("gcd_scalar");
     println!("gcd_binary");
+    println!("shannon_entropy");
     println!("prefix_sum_scalar");
     println!("prefix_sum_scalar_in_place");
     #[cfg(target_arch = "aarch64")]
@@ -250,6 +252,7 @@ fn parse_bench(name: &str) -> Option<Bench> {
         "matmul_neon_blocked" => Some(Bench::MatmulNeonBlocked),
         "gcd_scalar" => Some(Bench::GcdScalar),
         "gcd_binary" => Some(Bench::GcdBinary),
+        "shannon_entropy" => Some(Bench::ShannonEntropy),
         "prefix_sum_scalar" => Some(Bench::PrefixSumScalar),
         "prefix_sum_scalar_in_place" => Some(Bench::PrefixSumScalarInPlace),
         #[cfg(target_arch = "aarch64")]
@@ -291,6 +294,7 @@ impl Bench {
             #[cfg(target_arch = "aarch64")]
             Bench::MatmulNeonBlocked => 256,
             Bench::GcdScalar | Bench::GcdBinary => 100_000,
+            Bench::ShannonEntropy => 1_000_000,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 1_000_000,
             #[cfg(target_arch = "aarch64")]
             Bench::PrefixSumNeon
@@ -327,6 +331,7 @@ impl Bench {
             #[cfg(target_arch = "aarch64")]
             Bench::MatmulNeonBlocked => 3,
             Bench::GcdScalar | Bench::GcdBinary => 100,
+            Bench::ShannonEntropy => 10,
             Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => 10,
             #[cfg(target_arch = "aarch64")]
             Bench::PrefixSumNeon
@@ -364,6 +369,7 @@ impl Bench {
             Bench::MatmulNeonBlocked => "matmul_neon_blocked",
             Bench::GcdScalar => "gcd_scalar",
             Bench::GcdBinary => "gcd_binary",
+            Bench::ShannonEntropy => "shannon_entropy",
             Bench::PrefixSumScalar => "prefix_sum_scalar",
             Bench::PrefixSumScalarInPlace => "prefix_sum_scalar_in_place",
             #[cfg(target_arch = "aarch64")]
@@ -414,6 +420,15 @@ fn make_i32_input(len: usize, seed: u64) -> Vec<i32> {
     let mut values = Vec::with_capacity(len);
     for _ in 0..len {
         values.push(next_u64(&mut state) as u32 as i32);
+    }
+    values
+}
+
+fn make_u8_input(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed;
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(next_u64(&mut state) as u8);
     }
     values
 }
@@ -483,6 +498,7 @@ fn run_bench(config: Config) {
         Bench::MatmulNeonBlocked => bench_matmul(config, matmul_neon_blocked),
         Bench::GcdScalar => bench_gcd_scalar(config),
         Bench::GcdBinary => bench_gcd_binary(config),
+        Bench::ShannonEntropy => bench_shannon_entropy(config),
         Bench::PrefixSumScalar => bench_prefix_sum_scalar(config),
         Bench::PrefixSumScalarInPlace => bench_prefix_sum_scalar_in_place(config),
         #[cfg(target_arch = "aarch64")]
@@ -572,6 +588,11 @@ fn bench_stats(bench: Bench, config: &Config) -> BenchStats {
             work_items,
             bytes: work_items * 16,
             unit: "pair",
+        },
+        Bench::ShannonEntropy => BenchStats {
+            work_items,
+            bytes: work_items,
+            unit: "byte",
         },
         Bench::PrefixSumScalar | Bench::PrefixSumScalarInPlace => BenchStats {
             work_items,
@@ -780,6 +801,11 @@ fn verify_bench(bench: Bench) {
             let g = gcd_binary(21, 14);
             assert_eq!(g, 7);
         }
+        Bench::ShannonEntropy => {
+            let values = [0u8, 1, 2, 3];
+            let entropy = shannon_entropy(&values);
+            assert!((entropy - 2.0).abs() < 1.0e-12);
+        }
         Bench::PrefixSumScalar => {
             let input = [1, 2, 3, 4, 5];
             let expected = vec![1, 3, 6, 10, 15];
@@ -963,6 +989,15 @@ fn bench_gcd_binary(config: Config) {
         for &(a, b) in &pairs {
             acc ^= gcd_binary(black_box(a), black_box(b));
         }
+    }
+    black_box(acc);
+}
+
+fn bench_shannon_entropy(config: Config) {
+    let input = make_u8_input(config.len, config.seed);
+    let mut acc = 0.0f64;
+    for _ in 0..config.iters {
+        acc += shannon_entropy(black_box(&input));
     }
     black_box(acc);
 }

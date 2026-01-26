@@ -12,6 +12,7 @@
 //! - **S-tree / S+ tree** ([`s_tree_search_neon`], [`s_plus_tree_search_neon`]) — Implicit B-tree/B+ tree layouts (B=16/32)
 //! - **Matrix Multiplication** ([`matmul_baseline`], [`matmul_blocked`], etc.) — Cache-aware GEMM
 //! - **Prefix Sum** ([`prefix_sum_scalar`], [`prefix_sum`]) — Inclusive prefix sums with SIMD
+//! - **Shannon Entropy** ([`shannon_entropy`]) — Byte-frequency entropy in bits
 //!
 //! # References
 //!
@@ -21,6 +22,7 @@
 
 mod argmin;
 mod binary_search;
+mod entropy;
 mod gcd;
 mod matmul;
 mod prefix_sum;
@@ -28,6 +30,7 @@ mod s_tree;
 
 pub use argmin::*;
 pub use binary_search::*;
+pub use entropy::*;
 pub use gcd::*;
 pub use matmul::*;
 pub use prefix_sum::*;
